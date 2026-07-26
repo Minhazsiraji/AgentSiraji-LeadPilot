@@ -6,5 +6,5 @@ export const dynamic = "force-dynamic";
 export default async function OwnerWorkspace() {
   const user = await requireChatGPTUser("/owner");
 
-  return <LeadPilotApp user={user} />;
+  return <LeadPilotApp initialNow={new Date().toISOString()} user={user} />;
 }

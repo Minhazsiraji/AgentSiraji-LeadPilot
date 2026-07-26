@@ -59,17 +59,9 @@ type WorkspacePayload = {
   };
 };
 
-const previewLeads: PreviewLead[] = [
-  makePreview("emma-collins", "Emma Collins", "emma@example.com", "I need deep cleaning for a three-bedroom apartment next Saturday. Please send the price.", "Deep cleaning", "Website", 88, "Hot", "New", "Reply Approval", 280, 18),
-  makePreview("daniel-brooks", "Daniel Brooks", "daniel@example.com", "Looking for regular weekly cleaning in Camden for a two-bedroom flat.", "Regular cleaning", "Manual", 74, "Hot", "Contacted", "Follow-up Due", 560, 240),
-  makePreview("sophie-carter", "Sophie Carter", "sophie@example.com", "Could I get a quote for end-of-tenancy cleaning in Hackney?", "End-of-tenancy cleaning", "CSV import", 67, "Warm", "Proposal Sent", "Waiting for Customer", 390, 1_680),
-  makePreview("michael-reed", "Michael Reed", "michael@example.com", "We need a cleaner for our small office.", "Office cleaning", "Website", 51, "Warm", "Qualified", "Prepare Proposal", 720, 2_880),
-  makePreview("olivia-harris", "Olivia Harris", "olivia@example.com", "Fortnightly cleaning for our flat.", "Regular cleaning", "Referral", 82, "Hot", "Won", "Complete", 480, 5_760),
-];
-
 const navItems = ["Overview", "Leads", "Follow-ups", "Analytics", "Settings"];
 
-export default function LeadPilotApp({ user }: { user: ChatGPTUser | null }) {
+export default function LeadPilotApp({ initialNow, user }: { initialNow: string; user: ChatGPTUser | null }) {
   const [activeNav, setActiveNav] = useState("Overview");
   const [activeTab, setActiveTab] = useState("Needs attention");
   const [query, setQuery] = useState("");
@@ -79,6 +71,8 @@ export default function LeadPilotApp({ user }: { user: ChatGPTUser | null }) {
   const [loading, setLoading] = useState(Boolean(user));
   const [modal, setModal] = useState<"add" | "import" | "settings" | null>(null);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const [relativeTimeNow, setRelativeTimeNow] = useState(() => new Date(initialNow).getTime());
+  const previewLeads = useMemo(() => makePreviewLeads(new Date(initialNow).getTime()), [initialNow]);
 
   const refreshWorkspace = useCallback(async () => {
     if (!user) return;
@@ -100,6 +94,15 @@ export default function LeadPilotApp({ user }: { user: ChatGPTUser | null }) {
     const timer = window.setTimeout(() => void refreshWorkspace(), 0);
     return () => window.clearTimeout(timer);
   }, [refreshWorkspace]);
+
+  useEffect(() => {
+    const initialTimer = window.setTimeout(() => setRelativeTimeNow(Date.now()), 0);
+    const interval = window.setInterval(() => setRelativeTimeNow(Date.now()), 60_000);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const leads = workspace?.leads ?? previewLeads;
   const selectedLead = leads.find((lead) => lead.id === selectedLeadId) ?? null;
@@ -197,7 +200,7 @@ export default function LeadPilotApp({ user }: { user: ChatGPTUser | null }) {
                       <td><strong>{lead.serviceRequested || "Not identified"}</strong><small>{lead.source}</small></td>
                       <td><span className={`score score-${lead.temperature.toLowerCase()}`}>{lead.leadScore}</span><small>{lead.temperature}</small></td>
                       <td><span className={`status status-${lead.pipelineStatus.toLowerCase().replace(" ", "-")}`}>{lead.pipelineStatus}</span></td>
-                      <td><strong>{lead.attentionState}</strong><small className={attention ? "urgent-copy" : ""}>{relativeTime(lead.createdAt)}</small></td>
+                      <td><strong>{lead.attentionState}</strong><small className={attention ? "urgent-copy" : ""}>{relativeTime(lead.createdAt, relativeTimeNow)}</small></td>
                       <td><strong>{formatMoney(lead.expectedValue, workspace?.business.profile.currency ?? "GBP")}</strong></td>
                       <td><button className="row-action" onClick={() => requireWorkspace(`Open ${lead.customerName}`, () => setSelectedLeadId(lead.id))} aria-label={`Open ${lead.customerName}`} type="button">•••</button></td>
                     </tr>;
@@ -324,13 +327,23 @@ async function apiJson(url: string, init: RequestInit = {}) {
   return result;
 }
 
-function makePreview(id: string, customerName: string, email: string, originalMessage: string, serviceRequested: string, source: string, leadScore: number, temperature: LeadTemperature, pipelineStatus: LeadStatus, attentionState: string, expectedValue: number, minutesAgo: number): PreviewLead {
-  return { id, customerName, email, phone: null, originalMessage, serviceRequested, location: null, preferredDate: null, source, leadScore, temperature, pipelineStatus, attentionState, expectedValue, doNotContact: false, possibleSpam: false, createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString() };
+function makePreviewLeads(now: number): PreviewLead[] {
+  return [
+    makePreview("emma-collins", "Emma Collins", "emma@example.com", "I need deep cleaning for a three-bedroom apartment next Saturday. Please send the price.", "Deep cleaning", "Website", 88, "Hot", "New", "Reply Approval", 280, 18, now),
+    makePreview("daniel-brooks", "Daniel Brooks", "daniel@example.com", "Looking for regular weekly cleaning in Camden for a two-bedroom flat.", "Regular cleaning", "Manual", 74, "Hot", "Contacted", "Follow-up Due", 560, 240, now),
+    makePreview("sophie-carter", "Sophie Carter", "sophie@example.com", "Could I get a quote for end-of-tenancy cleaning in Hackney?", "End-of-tenancy cleaning", "CSV import", 67, "Warm", "Proposal Sent", "Waiting for Customer", 390, 1_680, now),
+    makePreview("michael-reed", "Michael Reed", "michael@example.com", "We need a cleaner for our small office.", "Office cleaning", "Website", 51, "Warm", "Qualified", "Prepare Proposal", 720, 2_880, now),
+    makePreview("olivia-harris", "Olivia Harris", "olivia@example.com", "Fortnightly cleaning for our flat.", "Regular cleaning", "Referral", 82, "Hot", "Won", "Complete", 480, 5_760, now),
+  ];
+}
+
+function makePreview(id: string, customerName: string, email: string, originalMessage: string, serviceRequested: string, source: string, leadScore: number, temperature: LeadTemperature, pipelineStatus: LeadStatus, attentionState: string, expectedValue: number, minutesAgo: number, now: number): PreviewLead {
+  return { id, customerName, email, phone: null, originalMessage, serviceRequested, location: null, preferredDate: null, source, leadScore, temperature, pipelineStatus, attentionState, expectedValue, doNotContact: false, possibleSpam: false, createdAt: new Date(now - minutesAgo * 60_000).toISOString() };
 }
 
 function initials(name: string) { return name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase(); }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "LeadPilot could not complete that request."; }
 function parseJson<T>(value: string | undefined, fallback: T): T { try { return value ? JSON.parse(value) as T : fallback; } catch { return fallback; } }
-function relativeTime(value: string) { const minutes = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 60_000)); return minutes < 60 ? `${minutes} min ago` : minutes < 1_440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1_440)}d ago`; }
+function relativeTime(value: string, now: number) { const minutes = Math.max(0, Math.round((now - new Date(value).getTime()) / 60_000)); return minutes < 60 ? `${minutes} min ago` : minutes < 1_440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1_440)}d ago`; }
 function formatDateTime(value: string) { return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(value)); }
 function formatMoney(value: number, currency: string) { try { return new Intl.NumberFormat("en-GB", { style: "currency", currency, maximumFractionDigits: 0 }).format(value); } catch { return `${currency} ${Math.round(value)}`; } }
