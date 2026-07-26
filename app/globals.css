@@ -96,7 +96,9 @@ a { color: inherit; }
 .eyebrow { margin: 0 0 12px; color: #47617a; font-size: 11px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
 .hero h1 { max-width: 820px; margin: 0; font-family: var(--font-fraunces), Georgia, serif; font-size: clamp(44px, 5vw, 72px); font-weight: 650; line-height: .98; letter-spacing: -.055em; color: #0b2039; }
 .hero-copy { margin: 18px 0 0; color: #52677b; font-size: 16px; line-height: 1.6; }
-.hero-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding-bottom: 7px; }
+.hero-actions { width: 330px; flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding-bottom: 7px; }
+.hero-actions .button { width: 100%; }
+.hero-actions .button-quiet { grid-column: 1 / -1; }
 .button { min-height: 46px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 9px; padding: 0 17px; font-size: 13px; font-weight: 800; text-decoration: none; cursor: pointer; transition: transform 150ms ease, background 150ms ease, color 150ms ease, border-color 150ms ease; }
 .button:hover { transform: translateY(-1px); }
 .button-primary { border: 1px solid var(--mint); background: var(--mint); color: var(--navy); }
@@ -281,7 +283,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
   .sidebar { width: 208px; }
   .workspace { margin-left: 208px; }
   .hero { align-items: flex-start; flex-direction: column; }
-  .hero-actions { justify-content: flex-start; }
+  .hero-actions { align-self: flex-start; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -298,8 +300,8 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
   .utility-bar { height: 48px; padding: 0 20px; }
   .page-content { padding: 25px 18px 20px; }
   .hero h1 { font-size: 46px; }
-  .hero-actions { width: 100%; }
-  .hero-actions .button { flex: 1; }
+  .hero-actions { width: 100%; grid-template-columns: 1fr; }
+  .hero-actions .button-quiet { grid-column: auto; }
   .metrics { grid-template-columns: 1fr; }
   .metric-card { min-height: 118px; }
   .inbox-header { align-items: stretch; flex-direction: column; }

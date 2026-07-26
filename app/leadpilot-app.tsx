@@ -74,6 +74,7 @@ export default function LeadPilotApp({ user }: { user: ChatGPTUser | null }) {
   const [activeTab, setActiveTab] = useState("Needs attention");
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const [noticeNeedsSignIn, setNoticeNeedsSignIn] = useState(false);
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [loading, setLoading] = useState(Boolean(user));
   const [modal, setModal] = useState<"add" | "import" | "settings" | null>(null);
@@ -88,6 +89,7 @@ export default function LeadPilotApp({ user }: { user: ChatGPTUser | null }) {
       if (!response.ok) throw new Error(result.error || "Could not load the workspace.");
       setWorkspace(result);
     } catch (error) {
+      setNoticeNeedsSignIn(false);
       setNotice(error instanceof Error ? error.message : "Could not load the workspace.");
     } finally {
       setLoading(false);
@@ -121,6 +123,7 @@ export default function LeadPilotApp({ user }: { user: ChatGPTUser | null }) {
 
   function requireWorkspace(action: string, callback?: () => void) {
     if (isDemo) {
+      setNoticeNeedsSignIn(true);
       setNotice(`${action} is available after signing in to the owner workspace.`);
       return;
     }
@@ -132,7 +135,10 @@ export default function LeadPilotApp({ user }: { user: ChatGPTUser | null }) {
     if (item === "Overview") setActiveTab("Needs attention");
     if (item === "Leads") setActiveTab("All leads");
     if (item === "Follow-ups") setActiveTab("Needs attention");
-    if (item === "Analytics") setNotice(`Conversion is ${metrics.conversionRate.toFixed(1)}% across legitimate leads; active pipeline value is ${formatMoney(metrics.expectedPipelineValue, workspace?.business.profile.currency ?? "GBP")}.`);
+    if (item === "Analytics") {
+      setNoticeNeedsSignIn(false);
+      setNotice(`Conversion is ${metrics.conversionRate.toFixed(1)}% across legitimate leads; active pipeline value is ${formatMoney(metrics.expectedPipelineValue, workspace?.business.profile.currency ?? "GBP")}.`);
+    }
     if (item === "Settings") requireWorkspace("Business settings", () => setModal("settings"));
   }
 
@@ -166,7 +172,7 @@ export default function LeadPilotApp({ user }: { user: ChatGPTUser | null }) {
             </div>
           </section>
 
-          {notice ? <div className="notice" role="status"><span>{notice}</span>{isDemo ? <a href="/owner">Sign in</a> : null}<button aria-label="Dismiss notice" onClick={() => setNotice(null)} type="button">×</button></div> : null}
+          {notice ? <div className="notice" role="status"><span>{notice}</span>{noticeNeedsSignIn ? <a href="/owner">Sign in</a> : null}<button aria-label="Dismiss notice" onClick={() => setNotice(null)} type="button">×</button></div> : null}
 
           <section className="metrics" aria-label="Lead summary">
             <MetricCard label="New enquiries" value={String(metrics.newLeads)} detail={`${metrics.hotLeads} hot leads`} symbol="01" />
