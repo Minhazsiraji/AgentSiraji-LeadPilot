@@ -38,5 +38,6 @@ next-env.d.ts
 /dist/
 /.wrangler/
 /.sites-runtime/
+/.npm-cache/
 /outputs/
 /work/

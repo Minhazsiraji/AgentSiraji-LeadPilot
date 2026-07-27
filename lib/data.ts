@@ -6,21 +6,29 @@ import type { BusinessProfile, LeadAnalysis, LeadInput, PipelineStatus } from ".
 import { getCloudflareEnv } from "./runtime-env";
 import { analyseWithOptionalAI, draftWithOptionalAI } from "./openai";
 
-export const DEFAULT_BUSINESS_ID = "brighthome-cleaning";
+export const DEFAULT_BUSINESS_ID = "stepfresh-bd";
 
 export const defaultBusinessProfile: BusinessProfile = {
-  name: "BrightHome Cleaning",
-  description: "Reliable home and small-office cleaning with careful, friendly service.",
-  timezone: "Europe/London",
-  currency: "GBP",
-  services: ["Deep cleaning", "Regular cleaning", "End-of-tenancy cleaning", "Office cleaning", "Move-in cleaning", "Move-out cleaning"],
-  excludedServices: ["Appliance repair", "Carpet repair", "Pest control"],
-  serviceAreas: ["London", "Westminster", "Camden", "Islington", "Hackney"],
-  businessHours: "Monday–Friday, 08:00–18:00",
-  responseTone: "Warm, concise and professional",
-  qualificationFields: ["service", "location", "preferred_date", "budget_or_scope", "contact_information"],
-  followUpDays: [1, 3, 7],
-  prohibitedClaims: ["Do not confirm availability until the owner checks the calendar.", "Do not invent or guarantee a price."],
+  name: "StepFresh",
+  description: "Shoe deodorizer spray sold nationwide in Bangladesh with cash on delivery.",
+  businessType: "product",
+  offeringLabel: "Product / package",
+  enquiryLabel: "Order or enquiry",
+  pipelineStages: ["New", "Contacted", "Order Confirmed", "Shipped", "Delivered", "Cancelled", "Returned"],
+  timezone: "Asia/Dhaka",
+  currency: "BDT",
+  services: ["1 bottle — ৳450", "2 bottles — ৳800"],
+  excludedServices: ["Medical treatment", "Guaranteed cure", "International delivery"],
+  serviceAreas: ["Bangladesh", "Dhaka", "Chattogram", "Sylhet", "Rajshahi", "Khulna", "Barishal", "Rangpur", "Mymensingh"],
+  businessHours: "Every day, 09:00–21:00",
+  responseTone: "Friendly, concise and helpful in the customer's language",
+  qualificationFields: ["package", "quantity", "phone", "delivery_address", "district", "cash_on_delivery_confirmation"],
+  followUpDays: [1, 3],
+  prohibitedClaims: [
+    "Do not claim the product treats a medical condition.",
+    "Do not invent delivery dates, stock availability, discounts, or product guarantees.",
+    "Do not confirm an order until the owner verifies phone, package, and delivery address.",
+  ],
 };
 
 let schemaReady: Promise<void> | null = null;
@@ -127,6 +135,10 @@ export function businessRowToProfile(row: typeof businesses.$inferSelect): Busin
   return {
     name: row.name,
     description: row.description,
+    businessType: defaultBusinessProfile.businessType,
+    offeringLabel: defaultBusinessProfile.offeringLabel,
+    enquiryLabel: defaultBusinessProfile.enquiryLabel,
+    pipelineStages: defaultBusinessProfile.pipelineStages,
     timezone: row.timezone,
     currency: row.currency,
     services: safeArray(row.servicesJson),
@@ -238,8 +250,8 @@ export async function getWorkspacePayload() {
     events: eventRows.filter((row) => row.leadId === lead.id).slice(0, 25),
   }));
   const legitimate = leadRows.filter((lead) => !lead.possibleSpam);
-  const won = legitimate.filter((lead) => lead.pipelineStatus === "Won");
-  const active = legitimate.filter((lead) => !["Won", "Lost"].includes(lead.pipelineStatus) && !lead.doNotContact);
+  const won = legitimate.filter((lead) => ["Delivered", "Won"].includes(lead.pipelineStatus));
+  const active = legitimate.filter((lead) => !["Delivered", "Cancelled", "Returned", "Lost", "Won"].includes(lead.pipelineStatus) && !lead.doNotContact);
   const now = new Date().toISOString();
   const due = followupRows.filter((task) => task.status === "pending" && task.dueAt <= now);
   const responseHours = leadRows
@@ -251,7 +263,7 @@ export async function getWorkspacePayload() {
     leads: items,
     metrics: {
       newLeads: leadRows.filter((lead) => lead.pipelineStatus === "New").length,
-      hotLeads: leadRows.filter((lead) => lead.temperature === "Hot" && !["Won", "Lost"].includes(lead.pipelineStatus)).length,
+      hotLeads: leadRows.filter((lead) => lead.temperature === "Hot" && !["Delivered", "Cancelled", "Returned", "Lost", "Won"].includes(lead.pipelineStatus)).length,
       followUpsDue: due.length,
       overdueFollowUps: due.filter((task) => task.dueAt < now).length,
       averageResponseHours: responseHours.length ? responseHours.reduce((sum, value) => sum + value, 0) / responseHours.length : 0,
@@ -266,7 +278,7 @@ export async function updateLead(leadId: string, patch: Record<string, unknown>,
   const db = getDb();
   const existing = await db.select().from(leads).where(and(eq(leads.id, leadId), eq(leads.businessId, DEFAULT_BUSINESS_ID))).limit(1);
   if (!existing[0]) return null;
-  const allowedStatuses: PipelineStatus[] = ["New", "Contacted", "Qualified", "Proposal Sent", "Won", "Lost"];
+  const allowedStatuses: PipelineStatus[] = defaultBusinessProfile.pipelineStages;
   const update: Partial<typeof leads.$inferInsert> = { updatedAt: new Date().toISOString() };
   if (typeof patch.customerName === "string" && patch.customerName.trim()) update.customerName = patch.customerName.trim();
   if (typeof patch.email === "string" || patch.email === null) update.email = normalizeEmail(patch.email as string | null);
@@ -299,7 +311,7 @@ export async function updateLead(leadId: string, patch: Record<string, unknown>,
       scoreBreakdownJson: JSON.stringify(score),
     }).where(eq(leadAnalyses.id, analysisRow[0].id));
   }
-  const terminal = current.pipelineStatus === "Won" || current.pipelineStatus === "Lost" || current.doNotContact;
+  const terminal = ["Delivered", "Cancelled", "Returned", "Lost"].includes(current.pipelineStatus) || current.doNotContact;
   if (terminal) {
     await db.update(followUpTasks).set({ status: "cancelled", cancelledReason: current.doNotContact ? "Do Not Contact" : `Lead marked ${current.pipelineStatus}` }).where(and(eq(followUpTasks.leadId, leadId), inArray(followUpTasks.status, ["pending", "waiting_for_approval"])));
   }
@@ -311,7 +323,7 @@ export async function approveDraft(leadId: string, message: string, actor: strin
   await ensureSchema();
   const db = getDb();
   const lead = await db.select().from(leads).where(and(eq(leads.id, leadId), eq(leads.businessId, DEFAULT_BUSINESS_ID))).limit(1);
-  if (!lead[0] || lead[0].doNotContact || lead[0].possibleSpam || ["Won", "Lost"].includes(lead[0].pipelineStatus)) return null;
+  if (!lead[0] || lead[0].doNotContact || lead[0].possibleSpam || ["Delivered", "Cancelled", "Returned", "Lost"].includes(lead[0].pipelineStatus)) return null;
   const draft = await db.select().from(replyDrafts).where(eq(replyDrafts.leadId, leadId)).orderBy(desc(replyDrafts.createdAt)).limit(1);
   if (!draft[0]) return null;
   const now = new Date().toISOString();
@@ -342,7 +354,7 @@ export async function prepareFollowUpDraft(taskId: string, actor: string) {
   if (!task[0] || task[0].status !== "pending") return null;
   const lead = await db.select().from(leads).where(and(eq(leads.id, task[0].leadId), eq(leads.businessId, DEFAULT_BUSINESS_ID))).limit(1);
   if (!lead[0]) return null;
-  if (lead[0].doNotContact || lead[0].possibleSpam || ["Won", "Lost"].includes(lead[0].pipelineStatus)) {
+  if (lead[0].doNotContact || lead[0].possibleSpam || ["Delivered", "Cancelled", "Returned", "Lost"].includes(lead[0].pipelineStatus)) {
     await db.update(followUpTasks).set({ status: "cancelled", cancelledReason: "Lead is closed or restricted" }).where(eq(followUpTasks.id, taskId));
     return null;
   }
@@ -445,9 +457,9 @@ async function seedWorkspace(actor: string) {
   if (count.length) return;
   const now = Date.now();
   const seed = [
-    { customerName: "Emma Collins", email: "emma@example.com", phone: "", message: "I need deep cleaning for a three-bedroom apartment next Saturday. Please send the price.", source: "Website", expectedValue: 280, submittedAt: new Date(now - 18 * 60_000).toISOString() },
-    { customerName: "Daniel Brooks", email: "daniel@example.com", phone: "+447700900122", message: "Looking for regular weekly cleaning in Camden for a two-bedroom flat. Are you available from next Friday?", source: "Manual", expectedValue: 560, submittedAt: new Date(now - 4 * 3_600_000).toISOString() },
-    { customerName: "Sophie Carter", email: "sophie@example.com", phone: "", message: "Could I get a quote for end-of-tenancy cleaning in Hackney? The flat has two bedrooms.", source: "CSV import", expectedValue: 390, submittedAt: new Date(now - 28 * 3_600_000).toISOString() },
+    { customerName: "Nusrat Jahan", email: "", phone: "+8801711000001", message: "Ami 2 bottle order korte chai. Dhaka delivery, COD hobe? Address Mirpur 10.", source: "Facebook", expectedValue: 800, submittedAt: new Date(now - 18 * 60_000).toISOString() },
+    { customerName: "Rafi Ahmed", email: "", phone: "+8801811000002", message: "One bottle price koto and Chattogram e delivery time?", source: "Messenger", expectedValue: 450, submittedAt: new Date(now - 4 * 3_600_000).toISOString() },
+    { customerName: "Sadia Rahman", email: "sadia@example.com", phone: "", message: "Does StepFresh work for sports shoes? I may order two bottles.", source: "Website", expectedValue: 800, submittedAt: new Date(now - 28 * 3_600_000).toISOString() },
   ];
   for (const item of seed) await createLead(item, actor);
 }

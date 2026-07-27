@@ -56,7 +56,7 @@ export function analyzeLead(input: LeadInput, business: BusinessProfile): LeadAn
     purchaseIntent,
     urgency,
     knownQualificationCount: 5 - missingInformation.length,
-    hasClearAction: /\?|\b(price|quote|book|availability|call|send|need|want)\b/i.test(message),
+    hasClearAction: /\?|\b(price|quote|book|order|buy|availability|call|send|need|want|koto|chai)\b/i.test(message),
   });
   const temperature = temperatureFor(score.total);
   const requiresHumanReview = possibleSpam || serviceFit === "unsupported" || doNotContact;
@@ -106,7 +106,7 @@ export function draftFirstReply(input: LeadInput, analysis: LeadAnalysis, busine
   const greeting = input.customerName.trim() ? `Hi ${input.customerName.trim().split(/\s+/)[0]},` : "Hello,";
   const servicePhrase = analysis.serviceRequested
     ? `your ${analysis.serviceRequested.toLowerCase()} enquiry`
-    : "your cleaning enquiry";
+    : `your ${business.enquiryLabel.toLowerCase()}`;
   const detailParts = [
     analysis.location ? `in ${analysis.location}` : null,
     analysis.preferredDateText ? `for ${analysis.preferredDateText}` : null,
@@ -131,7 +131,7 @@ export function draftFirstReply(input: LeadInput, analysis: LeadAnalysis, busine
 export function draftFollowUpReply(input: LeadInput, analysis: LeadAnalysis, business: BusinessProfile, step: number): ReplyDraft | null {
   if (analysis.possibleSpam || analysis.doNotContact) return null;
   const firstName = input.customerName.trim().split(/\s+/)[0] || "there";
-  const request = analysis.serviceRequested?.toLowerCase() || "cleaning";
+  const request = analysis.serviceRequested?.toLowerCase() || business.enquiryLabel.toLowerCase();
   const question = analysis.suggestedQuestions[0];
   const isFinal = step >= 3;
   const message = isFinal
@@ -171,10 +171,23 @@ export function temperatureFor(score: number): Temperature {
 }
 
 function findService(message: string, services: string[]) {
-  return services.find((service) => {
-    const terms = service.toLowerCase().replace(/cleaning/g, "clean").split(/[^a-z0-9]+/).filter((term) => term.length > 2);
-    return terms.every((term) => message.includes(term)) || terms.some((term) => message.includes(term) && term !== "clean");
-  }) ?? null;
+  const messageQuantity = message.match(/\b(\d+|one|two|three|four|five)\s*(?:bottles?|packs?|pieces?|pcs)\b/i)?.[1];
+  const ranked = services.map((service) => {
+    const normalized = service.toLowerCase().replace(/[৳£$€]\s*\d+(?:\.\d+)?/g, "");
+    const terms = normalized.split(/[^\p{L}\p{N}]+/u).filter((term) => term.length > 1);
+    const offeringQuantity = normalized.match(/\b(\d+|one|two|three|four|five)\s*(?:bottles?|packs?|pieces?|pcs)\b/i)?.[1];
+    const quantityScore = messageQuantity && offeringQuantity
+      ? normalizeQuantity(messageQuantity) === normalizeQuantity(offeringQuantity) ? 100 : -100
+      : 0;
+    const termScore = terms.filter((term) => message.includes(term)).length;
+    return { service, score: quantityScore + termScore };
+  }).filter((candidate) => candidate.score > 0).sort((left, right) => right.score - left.score);
+  return ranked[0]?.service ?? null;
+}
+
+function normalizeQuantity(value: string) {
+  const words: Record<string, string> = { one: "1", two: "2", three: "3", four: "4", five: "5" };
+  return words[value.toLowerCase()] ?? value;
 }
 
 function findLocation(message: string, areas: string[]) {
@@ -182,11 +195,11 @@ function findLocation(message: string, areas: string[]) {
 }
 
 function findBudget(message: string, defaultCurrency: string) {
-  const match = message.match(/(?:£|\$|€|gbp\s*|usd\s*|eur\s*)(\d+(?:[.,]\d{1,2})?)/i);
+  const match = message.match(/(?:৳|tk\.?\s*|taka\s*|bdt\s*|£|\$|€|gbp\s*|usd\s*|eur\s*)(\d+(?:[.,]\d{1,2})?)/i);
   if (!match) return { amount: null, currency: null };
   const amount = Number(match[1].replace(",", "."));
   const token = match[0].toLowerCase();
-  const currency = token.includes("$") || token.includes("usd") ? "USD" : token.includes("€") || token.includes("eur") ? "EUR" : token.includes("£") || token.includes("gbp") ? "GBP" : defaultCurrency;
+  const currency = token.includes("$") || token.includes("usd") ? "USD" : token.includes("€") || token.includes("eur") ? "EUR" : token.includes("£") || token.includes("gbp") ? "GBP" : /৳|tk|taka|bdt/.test(token) ? "BDT" : defaultCurrency;
   return { amount: Number.isFinite(amount) ? amount : null, currency };
 }
 
@@ -195,9 +208,13 @@ function findScopeDetails(message: string) {
   const bedroom = message.match(/\b(\d+|one|two|three|four|five)[ -]bed(?:room)?s?\b/i);
   const property = message.match(/\b(apartment|flat|house|office|studio|shop)\b/i);
   const frequency = message.match(/\b(weekly|fortnightly|monthly|one[- ]off)\b/i);
+  const quantity = message.match(/\b(\d+|one|two|three|four|five)\s*(?:bottles?|packs?|pieces?|pcs)\b/i);
+  const cod = message.match(/\b(?:cash on delivery|cod)\b/i);
   if (bedroom) details.push(`Property size: ${bedroom[0]}`);
   if (property) details.push(`Property type: ${property[0]}`);
   if (frequency) details.push(`Frequency: ${frequency[0]}`);
+  if (quantity) details.push(`Quantity: ${quantity[0]}`);
+  if (cod) details.push("Payment: Cash on delivery");
   return details;
 }
 
@@ -230,17 +247,17 @@ function classifyUrgency(message: string, preferredDate: string | null, submitte
 }
 
 function classifyPurchaseIntent(message: string, service: string | null, scopeCount: number) {
-  if (/\b(price|quote|book|booking|availability|available|how much|send.*price)\b/.test(message) && (service || scopeCount)) return { level: "high" as const, reason: "Customer requested a transaction-related next step and supplied useful detail." };
-  if (service || /\b(need|want|looking for|interested)\b/.test(message)) return { level: "medium" as const, reason: "Customer expressed relevant interest." };
+  if (/\b(price|quote|book|booking|order|buy|availability|available|how much|send.*price|koto|chai)\b/.test(message) && (service || scopeCount)) return { level: "high" as const, reason: "Customer requested a transaction-related next step and supplied useful detail." };
+  if (service || /\b(need|want|looking for|interested|nibo)\b/.test(message)) return { level: "medium" as const, reason: "Customer expressed relevant interest." };
   return { level: "low" as const, reason: "The enquiry is exploratory or unclear." };
 }
 
 function buildQuestions(missing: string[]) {
   return missing.map((field) => {
-    if (field === "service requested") return "Which cleaning service would you like help with?";
-    if (field === "service location") return "What is the service address or postcode?";
-    if (field === "preferred date") return "When would you like the cleaning completed?";
-    if (field === "budget or scope") return "Could you share the property size or cleaning scope?";
+    if (field === "service requested") return "Which product, package, or service would you like?";
+    if (field === "service location") return "What is your delivery or service location?";
+    if (field === "preferred date") return "When do you need it?";
+    if (field === "budget or scope") return "Could you share the quantity or scope you need?";
     return "What is the best way to contact you?";
   });
 }

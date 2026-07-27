@@ -1,11 +1,25 @@
 export type Level = "high" | "medium" | "low";
 export type FitLevel = "supported" | "unsupported" | "unknown";
 export type Temperature = "Hot" | "Warm" | "Cold";
-export type PipelineStatus = "New" | "Contacted" | "Qualified" | "Proposal Sent" | "Won" | "Lost";
+export type PipelineStatus =
+  | "New"
+  | "Contacted"
+  | "Qualified"
+  | "Offer Sent"
+  | "Order Confirmed"
+  | "Shipped"
+  | "Delivered"
+  | "Cancelled"
+  | "Returned"
+  | "Lost";
 
 export type BusinessProfile = {
   name: string;
   description: string;
+  businessType: "product" | "service" | "hybrid";
+  offeringLabel: string;
+  enquiryLabel: string;
+  pipelineStages: PipelineStatus[];
   timezone: string;
   currency: string;
   services: string[];
