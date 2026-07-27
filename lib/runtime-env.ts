@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 export type LeadPilotEnv = {
   DB: D1Database;
+  WORKSPACE_OWNER_EMAIL?: string;
   ASSETS?: Fetcher;
   IMAGES?: unknown;
   OPENAI_API_KEY?: string;
