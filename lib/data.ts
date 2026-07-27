@@ -118,15 +118,42 @@ export async function ensureBusiness() {
 
 export async function claimBusiness(ownerEmail: string) {
   const business = await ensureBusiness();
-  const normalized = ownerEmail.toLowerCase();
-  const configuredOwner = business.ownerEmail?.toLowerCase();
-  if (configuredOwner && configuredOwner !== normalized) throw new Error("FORBIDDEN_OWNER");
+  const normalized = ownerEmail.trim().toLowerCase();
+  const primaryOwner = getCloudflareEnv().WORKSPACE_OWNER_EMAIL?.trim().toLowerCase();
+  const configuredOwner = business.ownerEmail?.trim().toLowerCase();
+
+  if (primaryOwner && normalized !== primaryOwner) {
+    throw new Error("FORBIDDEN_OWNER");
+  }
+
+  if (primaryOwner && configuredOwner !== primaryOwner) {
+    const db = getDb();
+    const [claimed] = await db
+      .update(businesses)
+      .set({ ownerEmail: primaryOwner, updatedAt: new Date().toISOString() })
+      .where(eq(businesses.id, DEFAULT_BUSINESS_ID))
+      .returning();
+
+    await seedWorkspace(primaryOwner);
+    return claimed;
+  }
+
+  if (configuredOwner && configuredOwner !== normalized) {
+    throw new Error("FORBIDDEN_OWNER");
+  }
+
   if (!configuredOwner) {
     const db = getDb();
-    const [claimed] = await db.update(businesses).set({ ownerEmail: normalized, updatedAt: new Date().toISOString() }).where(eq(businesses.id, DEFAULT_BUSINESS_ID)).returning();
+    const [claimed] = await db
+      .update(businesses)
+      .set({ ownerEmail: normalized, updatedAt: new Date().toISOString() })
+      .where(eq(businesses.id, DEFAULT_BUSINESS_ID))
+      .returning();
+
     await seedWorkspace(normalized);
     return claimed;
   }
+
   await seedWorkspace(normalized);
   return business;
 }
