@@ -17,7 +17,7 @@ export default function PrivacyPage() {
         <section><h2>Human approval and AI</h2><p>Generated messages require owner approval before they are recorded or sent. Business rules prevent unverified claims about price, availability, and services. When an AI provider is configured, the submitted message may be processed to extract relevant lead details and prepare a draft.</p></section>
         <section><h2>Retention and deletion</h2><p>The business owner can permanently delete a customer record and its analysis, drafts, follow-up tasks, and activity history from the lead detail view.</p></section>
         <section><h2>Your choices</h2><p>You may ask the business to correct your information or stop contacting you. A Do Not Contact request cancels pending follow-ups.</p></section>
-        <section><h2>Portfolio demonstration</h2><p>BrightHome Cleaning is fictional. Do not submit sensitive, confidential, payment, identity, or health information to this demonstration.</p></section>
+        <section><h2>Pilot notice</h2><p>This is the StepFresh pilot of AgentSiraji LeadPilot. Do not submit payment-card, identity-document, health, or other sensitive information.</p></section>
         <Link className="button button-secondary" href="/enquire">Back to enquiry form</Link>
       </article>
     </main>

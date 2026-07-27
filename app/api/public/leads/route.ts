@@ -17,8 +17,8 @@ export async function POST(request: Request) {
     if (email && !/^\S+@\S+\.\S+$/.test(email)) {
       return Response.json({ error: "Enter a valid email address." }, { status: 400 });
     }
-    const result = await createLead({ customerName, email, phone, message, source: "Website enquiry" }, "Public form");
-    return Response.json({ ok: true, duplicate: result.duplicate, message: result.duplicate ? "We already received this enquiry and will follow it up." : "Your enquiry has been received." }, { status: result.duplicate ? 200 : 201 });
+    const result = await createLead({ customerName, email, phone, message, source: "Facebook order form" }, "Public form");
+    return Response.json({ ok: true, duplicate: result.duplicate, message: result.duplicate ? "We already received this order request and will follow it up." : "Your order request has been received. StepFresh will confirm it before dispatch." }, { status: result.duplicate ? 200 : 201 });
   } catch (error) {
     return apiError(error);
   }

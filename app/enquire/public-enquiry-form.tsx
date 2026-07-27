@@ -31,20 +31,20 @@ export default function PublicEnquiryForm() {
       <section className="enquiry-story">
         <Link className="brand enquiry-brand" href="/"><span>AgentSiraji</span><strong>LeadPilot</strong></Link>
         <div>
-          <p className="eyebrow">BrightHome Cleaning</p>
-          <h1>Tell us what needs a fresh start.</h1>
-          <p>Share the essentials. We’ll review your request and respond with the right next step—without making you repeat yourself.</p>
+          <p className="eyebrow">StepFresh · @stepfresh.bd</p>
+          <h1>Fresh shoes start here.</h1>
+          <p>Choose your package and share the delivery details. We’ll confirm your order before dispatch.</p>
         </div>
         <ul>
-          <li><span>01</span> Your details stay attached to one enquiry.</li>
-          <li><span>02</span> No price or availability is promised before review.</li>
-          <li><span>03</span> You can ask us to stop contact at any time.</li>
+          <li><span>01</span> One bottle ৳450 · Two bottles ৳800.</li>
+          <li><span>02</span> Free delivery · Cash on delivery nationwide.</li>
+          <li><span>03</span> A person reviews every order before confirmation.</li>
         </ul>
       </section>
       <section className="enquiry-panel">
         <div className="form-heading">
-          <p className="eyebrow">Request a quote</p>
-          <h2>How can we help?</h2>
+          <p className="eyebrow">Order form</p>
+          <h2>Where should we deliver?</h2>
           <p>Fields marked with * are required.</p>
         </div>
         <form onSubmit={submit}>
@@ -53,10 +53,10 @@ export default function PublicEnquiryForm() {
             <label>Email<input autoComplete="email" maxLength={180} name="email" type="email" /></label>
             <label>Phone<input autoComplete="tel" maxLength={60} name="phone" type="tel" /></label>
           </div>
-          <label>What cleaning do you need? *<textarea maxLength={5000} minLength={10} name="message" placeholder="For example: I need a deep clean for a three-bedroom flat next Saturday…" required rows={6} /></label>
+          <label>Package and delivery details *<textarea maxLength={5000} minLength={10} name="message" placeholder="Example: I want 2 bottles. Delivery address: Mirpur 10, Dhaka. Cash on delivery." required rows={6} /></label>
           <label className="honeypot" aria-hidden="true">Website<input autoComplete="off" name="companyWebsite" tabIndex={-1} /></label>
           <p className="form-note">Please include either an email address or phone number so the team can reply. By submitting, you agree to the <Link href="/privacy">privacy notice</Link>.</p>
-          <button className="button button-primary form-submit" disabled={state === "submitting"} type="submit">{state === "submitting" ? "Sending…" : "Send enquiry"}</button>
+          <button className="button button-primary form-submit" disabled={state === "submitting"} type="submit">{state === "submitting" ? "Sending…" : "Submit order request"}</button>
           {state === "success" || state === "error" ? <div className={`form-result form-result-${state}`} role="status">{message}</div> : null}
         </form>
         <Link className="back-link" href="/">← Back to LeadPilot</Link>

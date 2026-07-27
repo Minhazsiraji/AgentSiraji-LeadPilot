@@ -1,8 +1,8 @@
 # AgentSiraji LeadPilot
 
-LeadPilot is a controlled lead-management system for small businesses. It captures inbound enquiries, extracts qualification facts, calculates a deterministic score, prepares replies for human approval, and keeps follow-ups visible until the lead reaches a clear outcome.
+LeadPilot is a configurable lead and order-management system for small businesses. It captures inbound enquiries, extracts qualification facts, calculates a deterministic score, prepares replies for human approval, and keeps follow-ups visible until the lead reaches a clear outcome.
 
-The included portfolio workspace uses a fictional home-cleaning business, BrightHome Cleaning.
+The first real-business preset is StepFresh (`@stepfresh.bd`), a Bangladesh shoe-deodorizer brand. The business profile—not the AI engine—defines the offerings, areas, currency, tone, qualification fields, prohibited claims, and pipeline. This keeps the product reusable for AgentSiraji customers.
 
 ## Architecture
 
@@ -10,12 +10,12 @@ The included portfolio workspace uses a fictional home-cleaning business, Bright
 - Cloudflare D1 with Drizzle schema and generated migrations
 - ChatGPT sign-in for the single-owner workspace; anonymous public enquiry route
 - Small deterministic workflow modules for validation, scoring, pipeline rules, duplicate protection, and stopping conditions
-- Optional OpenAI Responses API adapter with Structured Outputs; the rules engine remains a safe no-key fallback
+- Provider-neutral AI layer with Gemini structured output first, optional OpenAI support, and a safe no-key rules fallback
 
 ## Main modules
 
 - `lib/lead-engine.ts`: normalisation, extraction fallback, scoring, temperature, first replies, and follow-ups
-- `lib/openai.ts`: optional structured extraction and reply generation with bounded retry and fallback
+- `lib/openai.ts`: Gemini/OpenAI provider adapter with structured extraction, bounded retry, and rules fallback
 - `lib/data.ts`: D1 persistence, audit history, workflow guards, approval, follow-up sequencing, settings, and deletion
 - `lib/csv.ts`: quoted CSV parsing and row validation
 - `app/api`: public capture and authenticated owner actions
@@ -26,23 +26,32 @@ The included portfolio workspace uses a fictional home-cleaning business, Bright
 
 - Human approval before generated messages are recorded as contact
 - Deterministic score calculation with visible breakdown
-- No autonomous Won or Lost decision
+- No autonomous order confirmation, fulfilment, cancellation, or loss decision
 - Duplicate submission protection
 - Spam and Do Not Contact suppression
 - Follow-ups stop on reply, terminal outcome, or contact restriction
 - Business-controlled services, areas, tone, and prohibited claims
 - Customer record deletion
 - CSV row validation and 250-row import limit
-- AI calls are not stored by OpenAI (`store: false`)
+- API keys remain server-side and are never returned to the browser
 
-## Optional OpenAI configuration
+## Optional AI configuration
 
-The app works without an API key by using the tested deterministic fallback. To enable structured AI extraction and drafting, configure hosted secrets:
+The app works without an API key. To enable Gemini for multilingual extraction and reply drafting, configure hosted secrets:
 
+- `AI_PROVIDER=gemini`
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL` (optional; defaults to `gemini-2.5-flash`)
+
+OpenAI remains available as an alternative:
+
+- `AI_PROVIDER=openai`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL` (optional; defaults to `gpt-5.6`)
 
-Never place secrets in source files or `.openai/hosting.json`.
+Set `AI_PROVIDER=rules` to force the deterministic engine. Never place secrets in source files, browser code, GitHub, screenshots, or `.openai/hosting.json`.
+
+Kimi is intentionally not wired yet. Its future adapter belongs behind the same provider interface after the API contract and model name are selected; adding it will not change lead scoring, safety rules, or the dashboard.
 
 ## Verification
 

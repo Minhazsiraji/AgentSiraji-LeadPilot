@@ -4,14 +4,18 @@ import { analyzeLead, draftFirstReply, draftFollowUpReply, normalizeMessage, tem
 import { parseLeadCsv } from "../lib/csv.ts";
 
 const business = {
-  name: "BrightHome Cleaning",
-  description: "Home cleaning",
-  timezone: "Europe/London",
-  currency: "GBP",
-  services: ["Deep cleaning", "Regular cleaning", "End-of-tenancy cleaning", "Office cleaning"],
-  excludedServices: ["Appliance repair", "Pest control"],
-  serviceAreas: ["London", "Camden", "Hackney"],
-  businessHours: "Monday–Friday",
+  name: "StepFresh",
+  description: "Shoe deodorizer spray",
+  businessType: "product",
+  offeringLabel: "Product / package",
+  enquiryLabel: "Order or enquiry",
+  pipelineStages: ["New", "Contacted", "Order Confirmed", "Shipped", "Delivered", "Cancelled", "Returned"],
+  timezone: "Asia/Dhaka",
+  currency: "BDT",
+  services: ["1 bottle — ৳450", "2 bottles — ৳800", "Deep cleaning", "Regular cleaning"],
+  excludedServices: ["Medical treatment", "Appliance repair"],
+  serviceAreas: ["Bangladesh", "Dhaka", "Chattogram", "London", "Camden"],
+  businessHours: "Every day",
   responseTone: "Warm and professional",
   qualificationFields: ["service", "location", "preferred_date", "budget_or_scope", "contact_information"],
   followUpDays: [1, 3, 7],
@@ -45,7 +49,7 @@ test("vague enquiry never invents a service", () => {
   assert.equal(result.confidence, "low");
   assert.ok(result.missingInformation.includes("service requested"));
   const draft = draftFirstReply({ customerName: "Emma", email: "e@example.com", phone: null, message: "Can you tell me more?", source: "Website", submittedAt: "2026-07-22T10:00:00.000Z" }, result, business);
-  assert.match(draft.message, /Which cleaning service/i);
+  assert.match(draft.message, /Which product, package, or service/i);
 });
 
 test("unsupported appliance repair is flagged for human review", () => {
@@ -106,6 +110,15 @@ test("temperature thresholds are deterministic", () => {
   assert.equal(temperatureFor(69), "Warm");
   assert.equal(temperatureFor(40), "Warm");
   assert.equal(temperatureFor(39), "Cold");
+});
+
+test("StepFresh mixed-language order captures package, location, COD and high intent", () => {
+  const result = analyse("Ami 2 bottle order korte chai. Dhaka delivery, COD hobe?");
+  assert.equal(result.serviceRequested, "2 bottles — ৳800");
+  assert.equal(result.location, "Dhaka");
+  assert.equal(result.purchaseIntent, "high");
+  assert.ok(result.scopeDetails.includes("Payment: Cash on delivery"));
+  assert.equal(result.temperature, "Hot");
 });
 
 test("CSV parser supports quoted commas and rejects invalid rows", () => {

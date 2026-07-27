@@ -115,7 +115,7 @@ export async function analyseWithOptionalAI(input: LeadInput, business: Business
     };
     return { analysis, modelUsed: configured.model };
   } catch (error) {
-    console.warn("OpenAI extraction unavailable; using rules fallback", error);
+    console.warn(`${configured.provider} extraction unavailable; using rules fallback`, error);
     return { analysis: fallback, modelUsed: "leadpilot-rules-v1" };
   }
 }
@@ -130,27 +130,22 @@ export async function draftWithOptionalAI(input: LeadInput, analysis: LeadAnalys
     if (!drafted.message.trim() || (drafted.message.match(/\?/g) ?? []).length > 2) return fallback;
     return { ...drafted, message: drafted.message.slice(0, 5000), requestedInformation: drafted.requestedInformation.slice(0, 2) };
   } catch (error) {
-    console.warn("OpenAI drafting unavailable; using rules fallback", error);
+    console.warn(`${configured.provider} drafting unavailable; using rules fallback`, error);
     return fallback;
   }
 }
 
-async function callStructured<T>(configured: { apiKey: string; model: string }, name: string, schema: object, instructions: string, input: string): Promise<T> {
+type AiConfiguration =
+  | { provider: "gemini"; apiKey: string; model: string }
+  | { provider: "openai"; apiKey: string; model: string };
+
+async function callStructured<T>(configured: AiConfiguration, name: string, schema: object, instructions: string, input: string): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: { authorization: `Bearer ${configured.apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model: configured.model, store: false, input: [{ role: "system", content: instructions }, { role: "user", content: input }], text: { format: { type: "json_schema", name, strict: true, schema } } }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) throw new Error(`OpenAI returned ${response.status}`);
-      const payload = await response.json() as { status?: string; output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string; refusal?: string }> }> };
-      if (payload.status && payload.status !== "completed") throw new Error(`OpenAI response status: ${payload.status}`);
-      const content = payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text" && item.text);
-      if (!content?.text) throw new Error(payload.output?.flatMap((item) => item.content ?? []).find((item) => item.refusal)?.refusal || "OpenAI returned no structured text.");
-      return JSON.parse(content.text) as T;
+      return configured.provider === "gemini"
+        ? await callGeminiStructured<T>(configured, schema, instructions, input)
+        : await callOpenAiStructured<T>(configured, name, schema, instructions, input);
     } catch (error) {
       lastError = error;
     }
@@ -161,12 +156,72 @@ async function callStructured<T>(configured: { apiKey: string; model: string }, 
 function configuration() {
   try {
     const env = getCloudflareEnv();
+    const selected = env.AI_PROVIDER?.trim().toLowerCase();
+    const geminiKey = env.GEMINI_API_KEY?.trim();
     const apiKey = env.OPENAI_API_KEY?.trim();
-    const model = env.OPENAI_MODEL?.trim() || "gpt-5.6";
-    return apiKey ? { apiKey, model } : null;
+    if (selected === "rules") return null;
+    if ((selected === "gemini" || !selected) && geminiKey) {
+      return { provider: "gemini" as const, apiKey: geminiKey, model: env.GEMINI_MODEL?.trim() || "gemini-2.5-flash" };
+    }
+    if ((selected === "openai" || !selected) && apiKey) {
+      return { provider: "openai" as const, apiKey, model: env.OPENAI_MODEL?.trim() || "gpt-5.6" };
+    }
+    return null;
   } catch {
     return null;
   }
+}
+
+async function callGeminiStructured<T>(
+  configured: Extract<AiConfiguration, { provider: "gemini" }>,
+  schema: object,
+  instructions: string,
+  input: string,
+): Promise<T> {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(configured.model)}:generateContent`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "x-goog-api-key": configured.apiKey, "content-type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: instructions }] },
+      contents: [{ role: "user", parts: [{ text: input }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseJsonSchema: schema,
+        temperature: 0.2,
+      },
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`Gemini returned ${response.status}`);
+  const payload = await response.json() as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
+    promptFeedback?: { blockReason?: string };
+  };
+  const text = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("").trim();
+  if (!text) throw new Error(payload.promptFeedback?.blockReason || "Gemini returned no structured text.");
+  return JSON.parse(text) as T;
+}
+
+async function callOpenAiStructured<T>(
+  configured: Extract<AiConfiguration, { provider: "openai" }>,
+  name: string,
+  schema: object,
+  instructions: string,
+  input: string,
+): Promise<T> {
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { authorization: `Bearer ${configured.apiKey}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: configured.model, store: false, input: [{ role: "system", content: instructions }, { role: "user", content: input }], text: { format: { type: "json_schema", name, strict: true, schema } } }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`OpenAI returned ${response.status}`);
+  const payload = await response.json() as { status?: string; output?: Array<{ content?: Array<{ type?: string; text?: string; refusal?: string }> }> };
+  if (payload.status && payload.status !== "completed") throw new Error(`OpenAI response status: ${payload.status}`);
+  const content = payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text" && item.text);
+  if (!content?.text) throw new Error(payload.output?.flatMap((item) => item.content ?? []).find((item) => item.refusal)?.refusal || "OpenAI returned no structured text.");
+  return JSON.parse(content.text) as T;
 }
 
 function validMessageType(value: string): LeadAnalysis["messageType"] {
