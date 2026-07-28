@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeLead, draftFirstReply, draftFollowUpReply, normalizeMessage, temperatureFor } from "../lib/lead-engine.ts";
+import { analyzeLead, draftFirstReply, draftFollowUpReply, inferConfiguredOrder, normalizeMessage, temperatureFor } from "../lib/lead-engine.ts";
 import { parseLeadCsv } from "../lib/csv.ts";
 
 const business = {
@@ -119,6 +119,27 @@ test("StepFresh mixed-language order captures package, location, COD and high in
   assert.equal(result.purchaseIntent, "high");
   assert.ok(result.scopeDetails.includes("Payment: Cash on delivery"));
   assert.equal(result.temperature, "Hot");
+});
+
+test("StepFresh larger quantities use configured packages without inventing a price", () => {
+  const fourBottleOrder = inferConfiguredOrder("I want 4 bottles", business.services);
+  assert.deepEqual(fourBottleOrder, {
+    quantity: 4,
+    serviceRequested: "4 bottles — ৳1,600",
+    expectedValue: 1600,
+  });
+
+  const threeBottleOrder = inferConfiguredOrder("Ami 3 bottle order korte chai", business.services);
+  assert.deepEqual(threeBottleOrder, {
+    quantity: 3,
+    serviceRequested: "3 bottles — ৳1,250",
+    expectedValue: 1250,
+  });
+
+  const analysis = analyse("I want 4 bottles delivered in Dhaka");
+  assert.equal(analysis.serviceRequested, "4 bottles — ৳1,600");
+  assert.equal(analysis.serviceFit, "supported");
+  assert.ok(!analysis.missingInformation.includes("service requested"));
 });
 
 test("CSV parser supports quoted commas and rejects invalid rows", () => {

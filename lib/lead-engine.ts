@@ -22,7 +22,8 @@ export function analyzeLead(input: LeadInput, business: BusinessProfile): LeadAn
   const lower = message.toLowerCase();
   const possibleSpam = SPAM_PATTERNS.some((pattern) => pattern.test(message));
   const doNotContact = STOP_PATTERNS.some((pattern) => pattern.test(message));
-  const serviceRequested = findService(lower, business.services);
+  const configuredOrder = inferConfiguredOrder(message, business.services);
+  const serviceRequested = configuredOrder?.serviceRequested ?? findService(lower, business.services);
   const explicitlyExcluded = findService(lower, business.excludedServices);
   const hasUnrelatedRepair = /\b(repair|fix)\b.*\b(washing machine|appliance|boiler|car|phone)\b/i.test(message);
   const location = findLocation(message, business.serviceAreas);
@@ -170,6 +171,45 @@ export function temperatureFor(score: number): Temperature {
   return "Cold";
 }
 
+export function inferConfiguredOrder(message: string, services: string[]) {
+  const requested = message.match(/\b(\d+|one|two|three|four|five)\s*(bottles?|packs?|pieces?|pcs)\b/i);
+  if (!requested) return null;
+
+  const quantity = Number(normalizeQuantity(requested[1]));
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 1_000) return null;
+
+  const requestedUnit = normalizeUnit(requested[2]);
+  const packages = services.flatMap((service) => {
+    const match = service.match(/\b(\d+|one|two|three|four|five)\s*(bottles?|packs?|pieces?|pcs)\b.*?([৳£$€])\s*(\d+(?:\.\d+)?)/i);
+    if (!match || normalizeUnit(match[2]) !== requestedUnit) return [];
+    const packageQuantity = Number(normalizeQuantity(match[1]));
+    const price = Number(match[4]);
+    return Number.isInteger(packageQuantity) && packageQuantity > 0 && Number.isFinite(price)
+      ? [{ quantity: packageQuantity, price, symbol: match[3] }]
+      : [];
+  });
+  if (!packages.length) return null;
+
+  const best = Array<number>(quantity + 1).fill(Number.POSITIVE_INFINITY);
+  best[0] = 0;
+  for (let current = 1; current <= quantity; current += 1) {
+    for (const item of packages) {
+      if (item.quantity <= current) {
+        best[current] = Math.min(best[current], best[current - item.quantity] + item.price);
+      }
+    }
+  }
+  if (!Number.isFinite(best[quantity])) return null;
+
+  const symbol = packages[0].symbol;
+  const unit = quantity === 1 ? singularUnit(requestedUnit) : pluralUnit(requestedUnit);
+  return {
+    quantity,
+    serviceRequested: `${quantity} ${unit} — ${symbol}${formatPrice(best[quantity])}`,
+    expectedValue: best[quantity],
+  };
+}
+
 function findService(message: string, services: string[]) {
   const messageQuantity = message.match(/\b(\d+|one|two|three|four|five)\s*(?:bottles?|packs?|pieces?|pcs)\b/i)?.[1];
   const ranked = services.map((service) => {
@@ -188,6 +228,24 @@ function findService(message: string, services: string[]) {
 function normalizeQuantity(value: string) {
   const words: Record<string, string> = { one: "1", two: "2", three: "3", four: "4", five: "5" };
   return words[value.toLowerCase()] ?? value;
+}
+
+function normalizeUnit(value: string) {
+  const lower = value.toLowerCase();
+  if (lower === "pcs") return "piece";
+  return lower.endsWith("s") ? lower.slice(0, -1) : lower;
+}
+
+function singularUnit(value: string) {
+  return value === "piece" ? "piece" : value;
+}
+
+function pluralUnit(value: string) {
+  return value === "piece" ? "pieces" : `${value}s`;
+}
+
+function formatPrice(value: number) {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
 }
 
 function findLocation(message: string, areas: string[]) {
