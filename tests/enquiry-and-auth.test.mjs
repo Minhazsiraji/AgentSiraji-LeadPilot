@@ -27,9 +27,23 @@ test("public order validation is enforced on the server", () => {
   assert.match(source, /quantity < 1 \|\| quantity > 20/);
   assert.match(source, /valid Bangladesh mobile number/);
   assert.match(source, /Choose a valid district/);
+  assert.match(source, /getThanasForDistrict\(district\)/);
+  assert.match(source, /valid thana or upazila for the selected district/);
   assert.match(source, /complete delivery address/);
   assert.match(source, /cash on delivery/);
   assert.match(source, /phone number and delivery details are correct/);
+});
+
+test("thana selection depends on the chosen district", () => {
+  const form = readFileSync("app/enquire/public-enquiry-form.tsx", "utf8");
+  const locations = JSON.parse(readFileSync("lib/bangladesh-thanas.json", "utf8"));
+  assert.equal(Object.keys(locations).length, 64);
+  assert.ok(locations.Dhaka.includes("Savar"));
+  assert.ok(locations.Chattogram.includes("Pahartali"));
+  assert.match(form, /getThanasForDistrict\(district\)/);
+  assert.match(form, /disabled=\{!district\}/);
+  assert.match(form, /setThana\(""\)/);
+  assert.doesNotMatch(form, /name="thana"[^>]*<input/);
 });
 
 test("owner sign-in uses a protected owner route", () => {
