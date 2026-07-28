@@ -2,12 +2,15 @@
 
 import { FormEvent, useState } from "react";
 import Link from "next/link";
-import { BANGLADESH_DISTRICTS } from "../../lib/public-order";
+import { BANGLADESH_DISTRICTS, getThanasForDistrict } from "../../lib/public-order";
 
 export default function PublicEnquiryForm() {
   const [state, setState] = useState<"idle" | "submitting" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
   const [quantity, setQuantity] = useState(1);
+  const [district, setDistrict] = useState("");
+  const [thana, setThana] = useState("");
+  const availableThanas = getThanasForDistrict(district);
   const total = Math.floor(quantity / 2) * 800 + (quantity % 2) * 450;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -24,6 +27,8 @@ export default function PublicEnquiryForm() {
       setState("success");
       formElement.reset();
       setQuantity(1);
+      setDistrict("");
+      setThana("");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "We could not send your enquiry.");
       setState("error");
@@ -64,12 +69,17 @@ export default function PublicEnquiryForm() {
           <div className="order-summary"><span>Order total</span><strong>৳{total.toLocaleString("en-US")}</strong><small>Free delivery nationwide</small></div>
           <div className="form-grid">
             <label>District *
-              <select defaultValue="" name="district" required>
+              <select name="district" onChange={(event) => { setDistrict(event.target.value); setThana(""); }} required value={district}>
                 <option disabled value="">Select district</option>
                 {BANGLADESH_DISTRICTS.map((district) => <option key={district} value={district}>{district}</option>)}
               </select>
             </label>
-            <label>Thana / Upazila *<input autoComplete="address-level2" maxLength={80} minLength={2} name="thana" placeholder="Example: Savar" required /></label>
+            <label>Thana / Upazila *
+              <select autoComplete="address-level2" disabled={!district} name="thana" onChange={(event) => setThana(event.target.value)} required value={thana}>
+                <option disabled value="">{district ? "Select thana or upazila" : "Select district first"}</option>
+                {availableThanas.map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
+            </label>
           </div>
           <label>Full delivery address *<textarea autoComplete="street-address" maxLength={300} minLength={10} name="address" placeholder="House/road, village or area, nearby landmark" required rows={4} /></label>
           <label>Order note (optional)<textarea maxLength={500} name="note" placeholder="Any delivery instruction or preferred call time" rows={2} /></label>
