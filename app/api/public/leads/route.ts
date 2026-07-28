@@ -1,5 +1,6 @@
 import { apiError } from "../../../../lib/api-auth";
 import { createLead } from "../../../../lib/data";
+import { publicOrderMessage, validatePublicOrder } from "../../../../lib/public-order";
 
 export async function POST(request: Request) {
   try {
@@ -7,17 +8,11 @@ export async function POST(request: Request) {
     if (typeof payload.companyWebsite === "string" && payload.companyWebsite.trim()) {
       return Response.json({ ok: true }, { status: 202 });
     }
-    const customerName = typeof payload.customerName === "string" ? payload.customerName.trim().slice(0, 120) : "";
-    const email = typeof payload.email === "string" ? payload.email.trim().slice(0, 180) : "";
-    const phone = typeof payload.phone === "string" ? payload.phone.trim().slice(0, 60) : "";
-    const message = typeof payload.message === "string" ? payload.message.trim().slice(0, 5000) : "";
-    if (!customerName || !message || (!email && !phone)) {
-      return Response.json({ error: "Name, message, and either email or phone are required." }, { status: 400 });
-    }
-    if (email && !/^\S+@\S+\.\S+$/.test(email)) {
-      return Response.json({ error: "Enter a valid email address." }, { status: 400 });
-    }
-    const result = await createLead({ customerName, email, phone, message, source: "Facebook order form" }, "Public form");
+    const validation = validatePublicOrder(payload);
+    if (!validation.ok) return Response.json({ error: validation.error }, { status: 400 });
+    const order = validation.order;
+    const message = publicOrderMessage(order);
+    const result = await createLead({ customerName: order.customerName, email: "", phone: order.phone, message, source: "Facebook order form" }, "Public form");
     return Response.json({ ok: true, duplicate: result.duplicate, message: result.duplicate ? "We already received this order request and will follow it up." : "Your order request has been received. StepFresh will confirm it before dispatch." }, { status: result.duplicate ? 200 : 201 });
   } catch (error) {
     return apiError(error);

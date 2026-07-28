@@ -19,7 +19,7 @@ export const defaultBusinessProfile: BusinessProfile = {
   currency: "BDT",
   services: ["1 bottle — ৳450", "2 bottles — ৳800"],
   excludedServices: ["Medical treatment", "Guaranteed cure", "International delivery"],
-  serviceAreas: ["Bangladesh", "Dhaka", "Chattogram", "Sylhet", "Rajshahi", "Khulna", "Barishal", "Rangpur", "Mymensingh"],
+  serviceAreas: ["Bangladesh", "Bagerhat", "Bandarban", "Barguna", "Barishal", "Bhola", "Bogura", "Brahmanbaria", "Chandpur", "Chapainawabganj", "Chattogram", "Chuadanga", "Cox's Bazar", "Cumilla", "Dhaka", "Dinajpur", "Faridpur", "Feni", "Gaibandha", "Gazipur", "Gopalganj", "Habiganj", "Jamalpur", "Jashore", "Jhalokathi", "Jhenaidah", "Joypurhat", "Khagrachhari", "Khulna", "Kishoreganj", "Kurigram", "Kushtia", "Lakshmipur", "Lalmonirhat", "Madaripur", "Magura", "Manikganj", "Meherpur", "Moulvibazar", "Munshiganj", "Mymensingh", "Naogaon", "Narail", "Narayanganj", "Narsingdi", "Natore", "Netrokona", "Nilphamari", "Noakhali", "Pabna", "Panchagarh", "Patuakhali", "Pirojpur", "Rajbari", "Rajshahi", "Rangamati", "Rangpur", "Satkhira", "Shariatpur", "Sherpur", "Sirajganj", "Sunamganj", "Sylhet", "Tangail", "Thakurgaon"],
   businessHours: "Every day, 09:00–21:00",
   responseTone: "Friendly, concise and helpful in the customer's language",
   qualificationFields: ["package", "quantity", "phone", "delivery_address", "district", "cash_on_delivery_confirmation"],
