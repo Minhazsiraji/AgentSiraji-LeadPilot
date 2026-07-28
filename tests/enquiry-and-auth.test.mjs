@@ -18,6 +18,7 @@ test("public order form requires structured delivery and anti-fake-order fields"
   assert.match(form, /pattern="[^"]*880[^"]*1\[3-9\]\[0-9\]\{8\}"/);
   assert.match(route, /validatePublicOrder\(payload\)/);
   assert.match(route, /publicOrderMessage\(order\)/);
+  assert.match(route, /location: `\$\{order\.thana\}, \$\{order\.district\}`/);
   assert.doesNotMatch(route, /payload\.message/);
 });
 
