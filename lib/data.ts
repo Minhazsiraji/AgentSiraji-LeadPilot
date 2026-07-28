@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../db";
 import { businesses, followUpTasks, leadAnalyses, leadEvents, leads, replyDrafts } from "../db/schema";
-import { analyzeLead, calculateScore, draftFollowUpReply, normalizeEmail, normalizeMessage, normalizePhone, temperatureFor } from "./lead-engine";
+import { analyzeLead, calculateScore, draftFollowUpReply, inferConfiguredOrder, normalizeEmail, normalizeMessage, normalizePhone, temperatureFor } from "./lead-engine";
 import type { BusinessProfile, LeadAnalysis, LeadInput, PipelineStatus } from "./types";
 import { getCloudflareEnv } from "./runtime-env";
 import { analyseWithOptionalAI, draftWithOptionalAI } from "./openai";
@@ -202,7 +202,17 @@ export async function createLead(input: Omit<LeadInput, "submittedAt"> & { submi
   if (duplicate) return { lead: duplicate, duplicate: true };
 
   const fallbackAnalysis = analyzeLead(cleanInput, profile);
-  const { analysis, modelUsed } = await analyseWithOptionalAI(cleanInput, profile, fallbackAnalysis);
+  const configuredOrder = inferConfiguredOrder(cleanInput.message, profile.services);
+  const optionalAnalysis = await analyseWithOptionalAI(cleanInput, profile, fallbackAnalysis);
+  const modelUsed = optionalAnalysis.modelUsed;
+  const analysis = configuredOrder
+    ? {
+        ...optionalAnalysis.analysis,
+        serviceRequested: configuredOrder.serviceRequested,
+        serviceFit: "supported" as const,
+        missingInformation: optionalAnalysis.analysis.missingInformation.filter((field) => field !== "service requested"),
+      }
+    : optionalAnalysis.analysis;
   const draft = await draftWithOptionalAI(cleanInput, analysis, profile);
   const leadId = crypto.randomUUID();
   const attentionState = analysis.doNotContact ? "Do Not Contact" : analysis.possibleSpam ? "Spam" : analysis.requiresHumanReview ? "Needs Review" : "Reply Approval";
@@ -230,7 +240,7 @@ export async function createLead(input: Omit<LeadInput, "submittedAt"> & { submi
     pipelineStatus: "New",
     attentionState,
     assignedUser: business.ownerEmail,
-    expectedValue: Math.max(0, input.expectedValue ?? 0),
+    expectedValue: Math.max(0, input.expectedValue ?? configuredOrder?.expectedValue ?? 0),
     doNotContact: analysis.doNotContact,
     possibleSpam: analysis.possibleSpam,
     analysisStatus: "complete",
@@ -262,6 +272,7 @@ export async function createLead(input: Omit<LeadInput, "submittedAt"> & { submi
 export async function getWorkspacePayload() {
   const business = await ensureBusiness();
   const db = getDb();
+  await repairLegacyOrderPricing(businessRowToProfile(business));
   const [leadRows, analysisRows, draftRows, followupRows, eventRows] = await Promise.all([
     db.select().from(leads).where(eq(leads.businessId, DEFAULT_BUSINESS_ID)).orderBy(desc(leads.createdAt)).limit(250),
     db.select().from(leadAnalyses).orderBy(desc(leadAnalyses.createdAt)),
@@ -298,6 +309,29 @@ export async function getWorkspacePayload() {
       expectedPipelineValue: active.reduce((sum, lead) => sum + lead.expectedValue, 0),
     },
   };
+}
+
+async function repairLegacyOrderPricing(profile: BusinessProfile) {
+  const db = getDb();
+  const legacyOrders = await db
+    .select()
+    .from(leads)
+    .where(and(eq(leads.businessId, DEFAULT_BUSINESS_ID), eq(leads.expectedValue, 0)))
+    .limit(250);
+
+  for (const lead of legacyOrders) {
+    const configuredOrder = inferConfiguredOrder(lead.originalMessage, profile.services);
+    if (!configuredOrder) continue;
+    await db
+      .update(leads)
+      .set({
+        serviceRequested: configuredOrder.serviceRequested,
+        serviceFit: "supported",
+        expectedValue: configuredOrder.expectedValue,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(leads.id, lead.id));
+  }
 }
 
 export async function updateLead(leadId: string, patch: Record<string, unknown>, actor: string) {
