@@ -107,9 +107,54 @@ test("confirming an order prepares a verified customer confirmation message", as
 
   const data = readFileSync("lib/data.ts", "utf8");
   const app = readFileSync("app/leadpilot-app.tsx", "utf8");
-  assert.match(data, /ensureOrderConfirmationDraft/);
+  assert.match(data, /ensureOrderStatusDraft/);
   assert.match(data, /order_confirmation_drafted/);
-  assert.match(data, /repairMissingOrderConfirmations/);
+  assert.match(data, /repairMissingOrderMessages/);
   assert.match(app, /Open WhatsApp/);
   assert.match(app, /Mark as sent/);
+});
+
+test("order status changes prepare safe WhatsApp and SMS customer messages", async () => {
+  const {
+    buildCustomerOrderStatusMessage,
+    customerOrderDraftType,
+    customerOrderMessageTitle,
+    isCustomerOrderDraft,
+  } = await import("../lib/order-confirmation.ts");
+  const input = {
+    businessName: "StepFresh",
+    currency: "BDT",
+    customerName: "Atiar",
+    expectedValue: 800,
+    location: "Savar, Dhaka",
+    originalMessage: "I want 2 bottles. District: Dhaka. Thana/Upazila: Savar. Delivery address: House 12, Road 3, Savar. Payment: Cash on delivery.",
+    phone: "+8801404385101",
+    serviceRequested: "2 bottles — ৳800",
+  };
+
+  const shipped = buildCustomerOrderStatusMessage(input, "Shipped");
+  const delivered = buildCustomerOrderStatusMessage(input, "Delivered");
+  const cancelled = buildCustomerOrderStatusMessage(input, "Cancelled");
+  for (const message of [shipped, delivered, cancelled]) {
+    assert.match(message, /Atiar/);
+    assert.match(message, /2 bottles/);
+    assert.match(message, /৳800/);
+    assert.match(message, /Savar, Dhaka/);
+    assert.doesNotMatch(message, /tracking|delivery date|guaranteed/i);
+  }
+  assert.match(shipped, /কুরিয়ারে দেওয়া হয়েছে/);
+  assert.match(delivered, /ডেলিভারি সম্পন্ন হয়েছে/);
+  assert.match(cancelled, /বাতিল করা হয়েছে/);
+  assert.equal(customerOrderDraftType("Shipped"), "order_status_shipped");
+  assert.equal(customerOrderMessageTitle("order_status_delivered"), "Delivery confirmation");
+  assert.equal(isCustomerOrderDraft("order_status_cancelled"), true);
+
+  const data = readFileSync("lib/data.ts", "utf8");
+  const app = readFileSync("app/leadpilot-app.tsx", "utf8");
+  assert.match(data, /ensureOrderStatusDraft/);
+  assert.match(data, /repairMissingOrderMessages/);
+  assert.match(data, /Customer Message Approval/);
+  assert.match(data, /isCustomerOrderDraft/);
+  assert.match(app, /customerOrderMessageTitle/);
+  assert.match(app, /isCustomerOrderDraft/);
 });
