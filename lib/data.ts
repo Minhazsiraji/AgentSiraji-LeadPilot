@@ -3,7 +3,12 @@ import { getDb } from "../db";
 import { businesses, followUpTasks, leadAnalyses, leadEvents, leads, ownerNotifications, replyDrafts } from "../db/schema";
 import { analyzeLead, calculateScore, draftFollowUpReply, inferConfiguredOrder, normalizeEmail, normalizeMessage, normalizePhone, temperatureFor } from "./lead-engine";
 import type { BusinessProfile, LeadAnalysis, LeadInput, PipelineStatus } from "./types";
-import { buildOrderConfirmationMessage } from "./order-confirmation";
+import {
+  buildCustomerOrderStatusMessage,
+  customerOrderDraftType,
+  isCustomerOrderDraft,
+  type CustomerOrderMessageStatus,
+} from "./order-confirmation";
 import { isValidOrderTransition } from "./order-workflow";
 import { getCloudflareEnv } from "./runtime-env";
 import { analyseWithOptionalAI, draftWithOptionalAI } from "./openai";
@@ -295,7 +300,7 @@ export async function getWorkspacePayload() {
   const db = getDb();
   const profile = businessRowToProfile(business);
   await repairLegacyOrderPricing(profile);
-  await repairMissingOrderConfirmations(profile);
+  await repairMissingOrderMessages(profile);
   const [leadRows, analysisRows, draftRows, followupRows, eventRows, notificationRows] = await Promise.all([
     db.select().from(leads).where(eq(leads.businessId, DEFAULT_BUSINESS_ID)).orderBy(desc(leads.createdAt)).limit(250),
     db.select().from(leadAnalyses).orderBy(desc(leadAnalyses.createdAt)),
@@ -371,31 +376,31 @@ async function repairLegacyOrderPricing(profile: BusinessProfile) {
   }
 }
 
-async function repairMissingOrderConfirmations(profile: BusinessProfile) {
+async function repairMissingOrderMessages(profile: BusinessProfile) {
   const db = getDb();
-  const confirmedOrders = await db
+  const messageStatuses: CustomerOrderMessageStatus[] = ["Order Confirmed", "Shipped", "Delivered", "Cancelled"];
+  const orders = await db
     .select()
     .from(leads)
-    .where(and(eq(leads.businessId, DEFAULT_BUSINESS_ID), eq(leads.pipelineStatus, "Order Confirmed")))
+    .where(and(eq(leads.businessId, DEFAULT_BUSINESS_ID), inArray(leads.pipelineStatus, messageStatuses)))
     .limit(250);
-  if (!confirmedOrders.length) return;
-  const confirmationDrafts = await db.select().from(replyDrafts).where(eq(replyDrafts.draftType, "order_confirmation"));
-  const existingLeadIds = new Set(confirmationDrafts.map((draft) => draft.leadId));
-  for (const lead of confirmedOrders) {
-    if (!existingLeadIds.has(lead.id)) await ensureOrderConfirmationDraft(lead, profile, "LeadPilot");
+  for (const lead of orders) {
+    await ensureOrderStatusDraft(lead, lead.pipelineStatus as CustomerOrderMessageStatus, profile, "LeadPilot");
   }
 }
 
-async function ensureOrderConfirmationDraft(
+async function ensureOrderStatusDraft(
   lead: typeof leads.$inferSelect,
+  status: CustomerOrderMessageStatus,
   profile: BusinessProfile,
   actor: string,
 ) {
   const db = getDb();
+  const draftType = customerOrderDraftType(status);
   const existing = await db
     .select()
     .from(replyDrafts)
-    .where(and(eq(replyDrafts.leadId, lead.id), eq(replyDrafts.draftType, "order_confirmation")))
+    .where(and(eq(replyDrafts.leadId, lead.id), eq(replyDrafts.draftType, draftType)))
     .limit(1);
   if (existing[0]) return existing[0];
 
@@ -403,9 +408,9 @@ async function ensureOrderConfirmationDraft(
   const [draft] = await db.insert(replyDrafts).values({
     id: crypto.randomUUID(),
     leadId: lead.id,
-    draftType: "order_confirmation",
-    subject: "StepFresh order confirmation",
-    message: buildOrderConfirmationMessage({
+    draftType,
+    subject: `${profile.name} ${status.toLowerCase()} update`,
+    message: buildCustomerOrderStatusMessage({
       businessName: profile.name,
       currency: profile.currency,
       customerName: lead.customerName,
@@ -414,19 +419,24 @@ async function ensureOrderConfirmationDraft(
       originalMessage: lead.originalMessage,
       phone: lead.phone,
       serviceRequested: lead.serviceRequested,
-    }),
+    }, status),
     approvalStatus: "pending",
     createdAt: now,
     updatedAt: now,
   }).returning();
-  await db.update(followUpTasks).set({
-    status: "cancelled",
-    cancelledReason: "Order confirmed",
-  }).where(and(
-    eq(followUpTasks.leadId, lead.id),
-    inArray(followUpTasks.status, ["pending", "waiting_for_approval", "waiting_for_initial_reply"]),
-  ));
-  await recordEvent(lead.id, "order_confirmation_drafted", { draftId: draft.id }, actor);
+  if (status === "Order Confirmed") {
+    await db.update(followUpTasks).set({
+      status: "cancelled",
+      cancelledReason: "Order confirmed",
+    }).where(and(
+      eq(followUpTasks.leadId, lead.id),
+      inArray(followUpTasks.status, ["pending", "waiting_for_approval", "waiting_for_initial_reply"]),
+    ));
+  }
+  const eventType = status === "Order Confirmed"
+    ? "order_confirmation_drafted"
+    : `order_${status.toLowerCase()}_message_drafted`;
+  await recordEvent(lead.id, eventType, { draftId: draft.id, status }, actor);
   return draft;
 }
 
@@ -475,10 +485,22 @@ export async function updateLead(leadId: string, patch: Record<string, unknown>,
     }).where(eq(leadAnalyses.id, analysisRow[0].id));
   }
   const terminal = ["Delivered", "Cancelled", "Returned", "Lost"].includes(current.pipelineStatus) || current.doNotContact;
-  if (current.pipelineStatus === "Order Confirmed" && existing[0].pipelineStatus !== "Order Confirmed") {
+  const messageStatuses: CustomerOrderMessageStatus[] = ["Order Confirmed", "Shipped", "Delivered", "Cancelled"];
+  if (
+    current.pipelineStatus !== existing[0].pipelineStatus
+    && messageStatuses.includes(current.pipelineStatus as CustomerOrderMessageStatus)
+  ) {
     const business = await ensureBusiness();
-    await ensureOrderConfirmationDraft(current, businessRowToProfile(business), actor);
-    await db.update(leads).set({ attentionState: "Confirmation Approval", updatedAt: new Date().toISOString() }).where(eq(leads.id, leadId));
+    await ensureOrderStatusDraft(
+      current,
+      current.pipelineStatus as CustomerOrderMessageStatus,
+      businessRowToProfile(business),
+      actor,
+    );
+    await db.update(leads).set({
+      attentionState: current.pipelineStatus === "Order Confirmed" ? "Confirmation Approval" : "Customer Message Approval",
+      updatedAt: new Date().toISOString(),
+    }).where(eq(leads.id, leadId));
   }
   if (terminal) {
     await db.update(followUpTasks).set({ status: "cancelled", cancelledReason: current.doNotContact ? "Do Not Contact" : `Lead marked ${current.pipelineStatus}` }).where(and(eq(followUpTasks.leadId, leadId), inArray(followUpTasks.status, ["pending", "waiting_for_approval"])));
@@ -491,12 +513,21 @@ export async function approveDraft(leadId: string, message: string, actor: strin
   await ensureSchema();
   const db = getDb();
   const lead = await db.select().from(leads).where(and(eq(leads.id, leadId), eq(leads.businessId, DEFAULT_BUSINESS_ID))).limit(1);
-  if (!lead[0] || lead[0].doNotContact || lead[0].possibleSpam || ["Delivered", "Cancelled", "Returned", "Lost"].includes(lead[0].pipelineStatus)) return null;
+  if (!lead[0] || lead[0].doNotContact || lead[0].possibleSpam) return null;
   const draft = await db.select().from(replyDrafts).where(eq(replyDrafts.leadId, leadId)).orderBy(desc(replyDrafts.createdAt)).limit(1);
   if (!draft[0]) return null;
+  const customerOrderMessage = isCustomerOrderDraft(draft[0].draftType);
+  if (!customerOrderMessage && ["Delivered", "Cancelled", "Returned", "Lost"].includes(lead[0].pipelineStatus)) return null;
   const now = new Date().toISOString();
   await db.update(replyDrafts).set({ message: message.trim() || draft[0].message, approvalStatus: "approved", approvedBy: actor, approvedAt: now, sentAt: now, updatedAt: now }).where(eq(replyDrafts.id, draft[0].id));
-  await db.update(leads).set({ pipelineStatus: lead[0].pipelineStatus === "New" ? "Contacted" : lead[0].pipelineStatus, attentionState: "Waiting for Customer", lastBusinessActivityAt: now, updatedAt: now }).where(eq(leads.id, leadId));
+  const attentionState = draft[0].draftType === "order_status_shipped"
+    ? "In delivery"
+    : draft[0].draftType === "order_status_delivered"
+      ? "Complete"
+      : draft[0].draftType === "order_status_cancelled"
+        ? "Cancelled"
+        : "Waiting for Customer";
+  await db.update(leads).set({ pipelineStatus: lead[0].pipelineStatus === "New" ? "Contacted" : lead[0].pipelineStatus, attentionState, lastBusinessActivityAt: now, updatedAt: now }).where(eq(leads.id, leadId));
   if (draft[0].draftType === "first_response") {
     await db.update(followUpTasks).set({ status: "pending" }).where(and(eq(followUpTasks.leadId, leadId), eq(followUpTasks.status, "waiting_for_initial_reply")));
   } else if (draft[0].draftType.startsWith("follow_up_")) {
@@ -513,7 +544,11 @@ export async function approveDraft(leadId: string, message: string, actor: strin
   }
   await recordEvent(
     leadId,
-    draft[0].draftType === "order_confirmation" ? "order_confirmation_sent_recorded" : "reply_approved_and_recorded",
+    draft[0].draftType === "order_confirmation"
+      ? "order_confirmation_sent_recorded"
+      : draft[0].draftType.startsWith("order_status_")
+        ? `${draft[0].draftType}_sent_recorded`
+        : "reply_approved_and_recorded",
     { draftId: draft[0].id, edited: message.trim() !== draft[0].message },
     actor,
   );
