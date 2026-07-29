@@ -261,6 +261,10 @@ td small { margin-top: 3px; color: #71808d; font-size: 10px; }
 .recommendation { margin: 14px 0 0; color: #40576a; font-size: 11px; line-height: 1.6; }
 .draft-editor { margin-top: 16px; white-space: pre-wrap; }
 .inline-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 12px; }
+.confirmation-section { border-color: #83cfb8; background: #f6fffb; }
+.confirmation-note { margin: 10px 0 0; color: #46695f; font-size: 11px; line-height: 1.55; }
+.button-whatsapp { border-color: #148c62; background: #e4f8f0; color: #0b6f4c; }
+.button-whatsapp:hover { background: #d5f3e7; }
 .workflow-track { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 16px; }
 .workflow-track span { padding: 8px 5px; border-radius: 8px; background: #eee9df; color: #71808d; font-size: 10px; font-weight: 800; text-align: center; }
 .workflow-track span.is-current { background: var(--mint); color: #173f37; }
