@@ -102,3 +102,14 @@ export const leadEvents = sqliteTable("lead_events", {
   createdBy: text("created_by").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const ownerNotifications = sqliteTable("owner_notifications", {
+  id: text("id").primaryKey(),
+  businessId: text("business_id").notNull(),
+  leadId: text("lead_id").notNull(),
+  type: text("type").notNull().default("new_order"),
+  title: text("title").notNull(),
+  message: text("message").notNull(),
+  readAt: text("read_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});

@@ -1,8 +1,9 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../db";
-import { businesses, followUpTasks, leadAnalyses, leadEvents, leads, replyDrafts } from "../db/schema";
+import { businesses, followUpTasks, leadAnalyses, leadEvents, leads, ownerNotifications, replyDrafts } from "../db/schema";
 import { analyzeLead, calculateScore, draftFollowUpReply, inferConfiguredOrder, normalizeEmail, normalizeMessage, normalizePhone, temperatureFor } from "./lead-engine";
 import type { BusinessProfile, LeadAnalysis, LeadInput, PipelineStatus } from "./types";
+import { isValidOrderTransition } from "./order-workflow";
 import { getCloudflareEnv } from "./runtime-env";
 import { analyseWithOptionalAI, draftWithOptionalAI } from "./openai";
 
@@ -83,12 +84,18 @@ async function createSchema() {
       id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, event_type TEXT NOT NULL, event_data_json TEXT NOT NULL DEFAULT '{}',
       created_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS owner_notifications (
+      id TEXT PRIMARY KEY, business_id TEXT NOT NULL, lead_id TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'new_order', title TEXT NOT NULL, message TEXT NOT NULL,
+      read_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
     d1.prepare("CREATE INDEX IF NOT EXISTS leads_business_created_idx ON leads (business_id, created_at DESC)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS leads_duplicate_idx ON leads (business_id, normalized_message, email, phone)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS analyses_lead_idx ON lead_analyses (lead_id)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS drafts_lead_idx ON reply_drafts (lead_id)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS followups_due_idx ON follow_up_tasks (status, due_at)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS events_lead_idx ON lead_events (lead_id, created_at DESC)"),
+    d1.prepare("CREATE INDEX IF NOT EXISTS notifications_business_idx ON owner_notifications (business_id, read_at, created_at DESC)"),
   ]);
 }
 
@@ -266,6 +273,19 @@ export async function createLead(input: Omit<LeadInput, "submittedAt"> & { submi
   await recordEvent(leadId, "lead_received", { source: cleanInput.source, score: analysis.score.total, temperature: analysis.temperature }, createdBy);
   await recordEvent(leadId, "lead_analysed", { confidence: analysis.confidence, missingInformation: analysis.missingInformation }, "LeadPilot");
   if (draft) await recordEvent(leadId, "reply_drafted", { approvalStatus: "pending" }, "LeadPilot");
+  if (cleanInput.source === "Facebook order form") {
+    const orderLabel = configuredOrder?.serviceRequested ?? analysis.serviceRequested ?? "New order";
+    const orderValue = Math.max(0, input.expectedValue ?? configuredOrder?.expectedValue ?? 0);
+    await db.insert(ownerNotifications).values({
+      id: crypto.randomUUID(),
+      businessId: DEFAULT_BUSINESS_ID,
+      leadId,
+      type: "new_order",
+      title: `New verified order from ${cleanInput.customerName}`,
+      message: `${cleanInput.phone || "No phone"} · ${orderLabel} · ${profile.currency} ${orderValue.toLocaleString("en-US")} · ${analysis.location || "Location pending"}`,
+      createdAt: submittedAt,
+    });
+  }
   return { lead, duplicate: false };
 }
 
@@ -273,12 +293,13 @@ export async function getWorkspacePayload() {
   const business = await ensureBusiness();
   const db = getDb();
   await repairLegacyOrderPricing(businessRowToProfile(business));
-  const [leadRows, analysisRows, draftRows, followupRows, eventRows] = await Promise.all([
+  const [leadRows, analysisRows, draftRows, followupRows, eventRows, notificationRows] = await Promise.all([
     db.select().from(leads).where(eq(leads.businessId, DEFAULT_BUSINESS_ID)).orderBy(desc(leads.createdAt)).limit(250),
     db.select().from(leadAnalyses).orderBy(desc(leadAnalyses.createdAt)),
     db.select().from(replyDrafts).orderBy(desc(replyDrafts.createdAt)),
     db.select().from(followUpTasks).orderBy(asc(followUpTasks.dueAt)),
     db.select().from(leadEvents).orderBy(desc(leadEvents.createdAt)).limit(1000),
+    db.select().from(ownerNotifications).where(eq(ownerNotifications.businessId, DEFAULT_BUSINESS_ID)).orderBy(desc(ownerNotifications.createdAt)).limit(50),
   ]);
   const items = leadRows.map((lead) => ({
     ...lead,
@@ -299,6 +320,7 @@ export async function getWorkspacePayload() {
   return {
     business: { ...business, profile: businessRowToProfile(business) },
     leads: items,
+    notifications: notificationRows,
     metrics: {
       newLeads: leadRows.filter((lead) => lead.pipelineStatus === "New").length,
       hotLeads: leadRows.filter((lead) => lead.temperature === "Hot" && !["Delivered", "Cancelled", "Returned", "Lost", "Won"].includes(lead.pipelineStatus)).length,
@@ -309,6 +331,18 @@ export async function getWorkspacePayload() {
       expectedPipelineValue: active.reduce((sum, lead) => sum + lead.expectedValue, 0),
     },
   };
+}
+
+export async function markOwnerNotificationsRead(notificationId?: string) {
+  await ensureSchema();
+  const db = getDb();
+  const readAt = new Date().toISOString();
+  if (notificationId) {
+    await db.update(ownerNotifications).set({ readAt }).where(and(eq(ownerNotifications.id, notificationId), eq(ownerNotifications.businessId, DEFAULT_BUSINESS_ID)));
+  } else {
+    await db.update(ownerNotifications).set({ readAt }).where(eq(ownerNotifications.businessId, DEFAULT_BUSINESS_ID));
+  }
+  return { ok: true, readAt };
 }
 
 async function repairLegacyOrderPricing(profile: BusinessProfile) {
@@ -348,7 +382,13 @@ export async function updateLead(leadId: string, patch: Record<string, unknown>,
   if (typeof patch.location === "string" || patch.location === null) update.location = cleanNullable(patch.location);
   if (typeof patch.preferredDate === "string" || patch.preferredDate === null) update.preferredDate = cleanNullable(patch.preferredDate);
   if (typeof patch.expectedValue === "number" && Number.isFinite(patch.expectedValue)) update.expectedValue = Math.max(0, patch.expectedValue);
-  if (typeof patch.pipelineStatus === "string" && allowedStatuses.includes(patch.pipelineStatus as PipelineStatus)) update.pipelineStatus = patch.pipelineStatus as PipelineStatus;
+  if (typeof patch.pipelineStatus === "string" && allowedStatuses.includes(patch.pipelineStatus as PipelineStatus)) {
+    const nextStatus = patch.pipelineStatus as PipelineStatus;
+    if (!isValidOrderTransition(existing[0].pipelineStatus as PipelineStatus, nextStatus)) {
+      throw new Error(`INVALID_ORDER_TRANSITION:${existing[0].pipelineStatus}:${nextStatus}`);
+    }
+    update.pipelineStatus = nextStatus;
+  }
   if (typeof patch.doNotContact === "boolean") update.doNotContact = patch.doNotContact;
   await db.update(leads).set(update).where(eq(leads.id, leadId));
   const [current] = await db.select().from(leads).where(eq(leads.id, leadId)).limit(1);
