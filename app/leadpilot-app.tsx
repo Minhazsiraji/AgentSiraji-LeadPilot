@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import type { ChatGPTUser } from "./chatgpt-auth";
 import { nextOrderStatuses, orderStatusAction } from "../lib/order-workflow";
+import { whatsappMessageUrl } from "../lib/order-confirmation";
 import type { BusinessProfile, PipelineStatus, ScoreBreakdown } from "../lib/types";
 
 type LeadTemperature = "Hot" | "Warm" | "Cold";
@@ -42,7 +43,7 @@ type AnalysisRow = {
   extractedInformationJson: string;
 };
 
-type DraftRow = { id: string; message: string; subject: string | null; approvalStatus: string; sentAt: string | null };
+type DraftRow = { id: string; draftType: string; message: string; subject: string | null; approvalStatus: string; sentAt: string | null };
 type FollowUpRow = { id: string; sequenceStep: number; dueAt: string; status: string; cancelledReason: string | null };
 type EventRow = { id: string; eventType: string; eventDataJson: string; createdBy: string; createdAt: string };
 type OwnerNotification = { id: string; leadId: string; title: string; message: string; readAt: string | null; createdAt: string };
@@ -115,7 +116,7 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
   const filteredLeads = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return leads.filter((lead) => {
-      const needsAttention = ["Reply Approval", "Needs Review", "Needs Reply", "Follow-up Due", "Spam"].includes(lead.attentionState);
+      const needsAttention = ["Reply Approval", "Confirmation Approval", "Needs Review", "Needs Reply", "Follow-up Due", "Spam"].includes(lead.attentionState);
       const matchesTab =
         activeTab === "All leads" ||
         (activeTab === "Needs attention" && needsAttention) ||
@@ -214,14 +215,14 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
           <section className="inbox-card" aria-labelledby="lead-inbox-title">
             <div className="inbox-header"><div><p className="eyebrow">Priority workspace</p><h2 id="lead-inbox-title">Lead inbox</h2></div><label className="search-field"><span className="sr-only">Search leads</span><span aria-hidden="true">⌕</span><input onChange={(event) => setQuery(event.target.value)} placeholder="Search leads…" type="search" value={query} /></label></div>
             <div className="tabs" role="tablist" aria-label="Lead filters">
-              {["Needs attention", "All leads", ...pipelineStages.slice(0, 5)].map((tab) => <button aria-selected={activeTab === tab} className={activeTab === tab ? "tab is-active" : "tab"} key={tab} onClick={() => setActiveTab(tab)} role="tab" type="button">{tab}{tab === "Needs attention" ? <span>{leads.filter((lead) => ["Reply Approval", "Needs Review", "Needs Reply", "Follow-up Due", "Spam"].includes(lead.attentionState)).length}</span> : null}</button>)}
+              {["Needs attention", "All leads", ...pipelineStages.slice(0, 5)].map((tab) => <button aria-selected={activeTab === tab} className={activeTab === tab ? "tab is-active" : "tab"} key={tab} onClick={() => setActiveTab(tab)} role="tab" type="button">{tab}{tab === "Needs attention" ? <span>{leads.filter((lead) => ["Reply Approval", "Confirmation Approval", "Needs Review", "Needs Reply", "Follow-up Due", "Spam"].includes(lead.attentionState)).length}</span> : null}</button>)}
             </div>
             <div className="table-wrap">
               <table>
                 <thead><tr><th scope="col">Lead</th><th scope="col">{offeringLabel}</th><th scope="col">Score</th><th scope="col">Status</th><th scope="col">Next step</th><th scope="col">Value</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
                 <tbody>
                   {filteredLeads.map((lead) => {
-                    const attention = ["Reply Approval", "Needs Review", "Needs Reply", "Follow-up Due", "Spam"].includes(lead.attentionState);
+                    const attention = ["Reply Approval", "Confirmation Approval", "Needs Review", "Needs Reply", "Follow-up Due", "Spam"].includes(lead.attentionState);
                     return <tr className={attention ? "needs-attention" : ""} key={lead.id} onDoubleClick={() => requireWorkspace(`Open ${lead.customerName}`, () => setSelectedLeadId(lead.id))}>
                       <td><div className="person-cell"><span className={`avatar avatar-${lead.temperature.toLowerCase()}`}>{initials(lead.customerName)}</span><span><strong>{lead.customerName}</strong><small>{lead.email || lead.phone || "No contact method"}</small></span></div></td>
                       <td><strong>{lead.serviceRequested || "Not identified"}</strong><small>{lead.source}</small></td>
@@ -244,7 +245,7 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
       {modal === "add" ? <AddLeadModal onClose={() => setModal(null)} onComplete={async (message) => { setModal(null); setNotice(message); await refreshWorkspace(); }} /> : null}
       {modal === "import" ? <ImportModal onClose={() => setModal(null)} onComplete={async (message) => { setModal(null); setNotice(message); await refreshWorkspace(); }} /> : null}
       {modal === "settings" && workspace ? <SettingsModal profile={workspace.business.profile} onClose={() => setModal(null)} onComplete={async (message) => { setModal(null); setNotice(message); await refreshWorkspace(); }} /> : null}
-      {selectedLead ? <LeadDrawer lead={selectedLead} currency={currency} offeringLabel={offeringLabel} onClose={() => setSelectedLeadId(null)} onChanged={async (message) => { setNotice(message); await refreshWorkspace(); }} /> : null}
+      {selectedLead ? <LeadDrawer key={`${selectedLead.id}:${selectedLead.draft?.id ?? "none"}`} lead={selectedLead} currency={currency} offeringLabel={offeringLabel} onClose={() => setSelectedLeadId(null)} onChanged={async (message) => { setNotice(message); await refreshWorkspace(); }} /> : null}
     </main>
   );
 }
@@ -303,6 +304,8 @@ function LeadDrawer({ lead, currency, offeringLabel, onClose, onChanged }: { lea
   const missing = parseJson<string[]>(lead.analysis?.missingInformationJson, []);
   const score = parseJson<ScoreBreakdown>(lead.analysis?.scoreBreakdownJson, { serviceFit: 0, purchaseIntent: 0, urgency: 0, completeness: 0, engagement: 0, total: lead.leadScore });
   const nextStatuses = nextOrderStatuses(lead.pipelineStatus as PipelineStatus);
+  const isOrderConfirmation = lead.draft?.draftType === "order_confirmation";
+  const whatsappUrl = isOrderConfirmation ? whatsappMessageUrl(lead.phone, draft) : null;
   async function action(url: string, init: RequestInit, success: string) {
     setBusy(true); setError("");
     try { await apiJson(url, init); await onChanged(success); setBusy(false); } catch (caught) { setError(errorMessage(caught)); setBusy(false); }
@@ -321,7 +324,7 @@ function LeadDrawer({ lead, currency, offeringLabel, onClose, onChanged }: { lea
     <section className="detail-section order-workflow"><div className="detail-section-heading"><div><p className="detail-label">Order workflow</p><h3>{lead.pipelineStatus}</h3></div><span className={`status status-${lead.pipelineStatus.toLowerCase().replace(" ", "-")}`}>{nextStatuses.length ? "Action needed" : "Complete"}</span></div><div className="workflow-track">{["New", "Order Confirmed", "Shipped", "Delivered"].map((status) => <span className={status === lead.pipelineStatus ? "is-current" : ""} key={status}>{status}</span>)}</div>{nextStatuses.length ? <div className="inline-actions">{nextStatuses.map((status) => <button className={status === "Cancelled" ? "button button-quiet workflow-cancel" : "button button-primary"} disabled={busy} key={status} onClick={() => void action(`/api/leads/${lead.id}`, { method: "PATCH", body: JSON.stringify({ pipelineStatus: status }) }, `Order moved to ${status}.`)} type="button">{orderStatusAction(status)}</button>)}</div> : <p className="workflow-complete">No further action is required for this order.</p>}</section>
     <section className="detail-section"><div className="detail-section-heading"><div><p className="detail-label">LeadPilot analysis</p><h3>Transparent score</h3></div><span className={`score score-${lead.temperature.toLowerCase()}`}>{score.total}</span></div><div className="score-grid"><ScorePart label="Service fit" value={score.serviceFit} max={30} /><ScorePart label="Purchase intent" value={score.purchaseIntent} max={25} /><ScorePart label="Urgency" value={score.urgency} max={20} /><ScorePart label="Completeness" value={score.completeness} max={15} /><ScorePart label="Engagement" value={score.engagement} max={10} /></div><div className="analysis-meta"><span>Confidence: <strong>{lead.analysis?.confidence ?? "—"}</strong></span><span>Engine: <strong>{lead.analysis?.modelUsed ?? "—"}</strong></span></div>{missing.length ? <div className="missing-box"><strong>Missing information</strong><span>{missing.join(" · ")}</span></div> : null}<p className="recommendation">{lead.analysis?.recommendedNextAction || String(analysis.recommendedNextAction || "Review the lead.")}</p></section>
     <section className="detail-section"><p className="detail-label">Editable facts</p><form className="modal-form compact" onSubmit={save}><div className="form-grid"><Field defaultValue={lead.customerName} label="Customer name" name="customerName" required /><Field defaultValue={lead.email ?? ""} label="Email" name="email" type="email" /></div><div className="form-grid"><Field defaultValue={lead.phone ?? ""} label="Phone" name="phone" /><Field defaultValue={lead.serviceRequested ?? ""} label={offeringLabel} name="serviceRequested" /></div><div className="form-grid"><Field defaultValue={lead.location ?? ""} label="Delivery / service location" name="location" /><Field defaultValue={lead.preferredDate ?? ""} label="Needed date" name="preferredDate" type="date" /></div><Field defaultValue={String(lead.expectedValue)} label={`Expected value (${currency})`} min="0" name="expectedValue" type="number" /><input name="pipelineStatus" type="hidden" value={lead.pipelineStatus} /><label className="check-label"><input defaultChecked={lead.doNotContact} name="doNotContact" type="checkbox" /> Do not contact this customer</label><button className="button button-secondary" disabled={busy} type="submit">Save corrections</button></form></section>
-    {lead.draft ? <section className="detail-section"><div className="detail-section-heading"><div><p className="detail-label">Reply draft</p><h3>{lead.draft.approvalStatus === "approved" ? "Approved response" : "Owner approval required"}</h3></div><span className={`approval-pill approval-${lead.draft.approvalStatus}`}>{lead.draft.approvalStatus}</span></div><textarea className="draft-editor" onChange={(event) => setDraft(event.target.value)} rows={10} value={draft} /><div className="inline-actions"><button className="button button-primary" disabled={busy || lead.draft.approvalStatus === "approved" || lead.doNotContact || lead.possibleSpam} onClick={() => void action(`/api/leads/${lead.id}/approve`, { method: "POST", body: JSON.stringify({ message: draft }) }, "Reply approved, contact recorded, and follow-up activated.")} type="button">Approve & record contact</button><button className="button button-quiet" onClick={() => void navigator.clipboard.writeText(draft)} type="button">Copy reply</button></div></section> : <section className="detail-section warning-section"><strong>No reply was created.</strong><span>This lead is spam, Do Not Contact, or needs manual review.</span></section>}
+    {lead.draft ? <section className={isOrderConfirmation ? "detail-section confirmation-section" : "detail-section"}><div className="detail-section-heading"><div><p className="detail-label">{isOrderConfirmation ? "Customer message" : "Reply draft"}</p><h3>{isOrderConfirmation ? "Order confirmation" : lead.draft.approvalStatus === "approved" ? "Approved response" : "Owner approval required"}</h3></div><span className={`approval-pill approval-${lead.draft.approvalStatus}`}>{lead.draft.approvalStatus === "approved" ? "sent" : "ready to send"}</span></div>{isOrderConfirmation ? <p className="confirmation-note">Prepared automatically from the verified order. Review it before sending.</p> : null}<textarea className="draft-editor" onChange={(event) => setDraft(event.target.value)} rows={isOrderConfirmation ? 13 : 10} value={draft} /><div className="inline-actions">{isOrderConfirmation && whatsappUrl && lead.draft.approvalStatus !== "approved" ? <a className="button button-whatsapp" href={whatsappUrl} rel="noreferrer" target="_blank">Open WhatsApp</a> : null}<button className="button button-quiet" onClick={() => void navigator.clipboard.writeText(draft)} type="button">{isOrderConfirmation ? "Copy message" : "Copy reply"}</button><button className="button button-primary" disabled={busy || lead.draft.approvalStatus === "approved" || lead.doNotContact || lead.possibleSpam} onClick={() => void action(`/api/leads/${lead.id}/approve`, { method: "POST", body: JSON.stringify({ message: draft }) }, isOrderConfirmation ? "Order confirmation recorded as sent." : "Reply approved, contact recorded, and follow-up activated.")} type="button">{isOrderConfirmation ? "Mark as sent" : "Approve & record contact"}</button></div></section> : <section className="detail-section warning-section"><strong>No reply was created.</strong><span>This lead is spam, Do Not Contact, or needs manual review.</span></section>}
     <section className="detail-section"><p className="detail-label">Customer replied?</p><textarea onChange={(event) => setReply(event.target.value)} placeholder="Paste the customer’s latest reply. Pending follow-ups will stop immediately." rows={4} value={reply} /><button className="button button-secondary" disabled={busy || !reply.trim()} onClick={() => void action(`/api/leads/${lead.id}/reply`, { method: "POST", body: JSON.stringify({ message: reply }) }, "Customer reply recorded; pending follow-ups were cancelled.")} type="button">Record reply</button></section>
     <section className="detail-section"><div className="detail-section-heading"><div><p className="detail-label">Follow-up timeline</p><h3>{lead.followUps?.length ?? 0} task{lead.followUps?.length === 1 ? "" : "s"}</h3></div></div><div className="timeline">{lead.followUps?.map((task) => <div className="timeline-item" key={task.id}><span className={`timeline-dot timeline-${task.status}`} /><div><strong>Step {task.sequenceStep} · {task.status.replaceAll("_", " ")}</strong><small>{formatDateTime(task.dueAt)}{task.cancelledReason ? ` · ${task.cancelledReason}` : ""}</small></div>{["pending", "waiting_for_approval", "waiting_for_initial_reply"].includes(task.status) ? <div className="timeline-actions">{task.status === "pending" ? <button disabled={busy} onClick={() => void action(`/api/follow-ups/${task.id}/draft`, { method: "POST", body: "{}" }, "Follow-up draft prepared for owner approval.")} type="button">Prepare draft</button> : null}<button disabled={busy} onClick={() => void action(`/api/follow-ups/${task.id}`, { method: "PATCH", body: JSON.stringify({ status: "completed" }) }, "Follow-up completed.")} type="button">Complete</button><button disabled={busy} onClick={() => void action(`/api/follow-ups/${task.id}`, { method: "PATCH", body: JSON.stringify({ status: "cancelled" }) }, "Follow-up cancelled.")} type="button">Cancel</button></div> : null}</div>)}</div></section>
     <section className="detail-section"><p className="detail-label">Activity history</p><div className="timeline">{lead.events?.map((event) => <div className="timeline-item" key={event.id}><span className="timeline-dot" /><div><strong>{event.eventType.replaceAll("_", " ")}</strong><small>{event.createdBy} · {formatDateTime(event.createdAt)}</small></div></div>)}</div></section>
@@ -360,7 +363,19 @@ function makePreviewLeads(now: number): PreviewLead[] {
   return [
     makePreview("nusrat-jahan", "Nusrat Jahan", "", "Ami 2 bottle order korte chai. Dhaka delivery, COD hobe?", "2 bottles — ৳800", "Facebook", 88, "Hot", "New", "Reply Approval", 800, 18, now),
     makePreview("rafi-ahmed", "Rafi Ahmed", "", "One bottle price koto and Chattogram e delivery time?", "1 bottle — ৳450", "Messenger", 74, "Hot", "Contacted", "Follow-up Due", 450, 240, now),
-    makePreview("sadia-rahman", "Sadia Rahman", "sadia@example.com", "Does StepFresh work for sports shoes? I may order two bottles.", "2 bottles — ৳800", "Website", 67, "Warm", "Order Confirmed", "Waiting for Customer", 800, 1_680, now),
+    {
+      ...makePreview("sadia-rahman", "Sadia Rahman", "sadia@example.com", "I want 2 bottles. District: Dhaka. Thana/Upazila: Savar. Delivery address: House 12, Road 3, Savar. Payment: Cash on delivery.", "2 bottles — ৳800", "Facebook order form", 67, "Warm", "Order Confirmed", "Confirmation Approval", 800, 1_680, now),
+      phone: "+8801712345678",
+      location: "Savar, Dhaka",
+      draft: {
+        id: "demo-order-confirmation",
+        draftType: "order_confirmation",
+        subject: "StepFresh order confirmation",
+        message: "প্রিয় Sadia Rahman,\n\nআপনার StepFresh অর্ডারটি নিশ্চিত করা হয়েছে ✅\n\nঅর্ডার: 2 bottles\nমোট: ৳800\nফোন: +8801712345678\nডেলিভারি এলাকা: Savar, Dhaka\nঠিকানা: House 12, Road 3, Savar\nপেমেন্ট: ক্যাশ অন ডেলিভারি\n\nপণ্য কুরিয়ারে দেওয়ার পর আমরা আপনাকে জানাব।\n\nধন্যবাদ,\nStepFresh",
+        approvalStatus: "pending",
+        sentAt: null,
+      },
+    },
     makePreview("tanvir-hasan", "Tanvir Hasan", "", "I need one bottle in Sylhet.", "1 bottle — ৳450", "Facebook", 72, "Hot", "Shipped", "In delivery", 450, 2_880, now),
     makePreview("mahiya-islam", "Mahiya Islam", "", "Received my two bottles, thank you.", "2 bottles — ৳800", "Messenger", 82, "Hot", "Delivered", "Complete", 800, 5_760, now),
   ];

@@ -3,6 +3,7 @@ import { getDb } from "../db";
 import { businesses, followUpTasks, leadAnalyses, leadEvents, leads, ownerNotifications, replyDrafts } from "../db/schema";
 import { analyzeLead, calculateScore, draftFollowUpReply, inferConfiguredOrder, normalizeEmail, normalizeMessage, normalizePhone, temperatureFor } from "./lead-engine";
 import type { BusinessProfile, LeadAnalysis, LeadInput, PipelineStatus } from "./types";
+import { buildOrderConfirmationMessage } from "./order-confirmation";
 import { isValidOrderTransition } from "./order-workflow";
 import { getCloudflareEnv } from "./runtime-env";
 import { analyseWithOptionalAI, draftWithOptionalAI } from "./openai";
@@ -292,7 +293,9 @@ export async function createLead(input: Omit<LeadInput, "submittedAt"> & { submi
 export async function getWorkspacePayload() {
   const business = await ensureBusiness();
   const db = getDb();
-  await repairLegacyOrderPricing(businessRowToProfile(business));
+  const profile = businessRowToProfile(business);
+  await repairLegacyOrderPricing(profile);
+  await repairMissingOrderConfirmations(profile);
   const [leadRows, analysisRows, draftRows, followupRows, eventRows, notificationRows] = await Promise.all([
     db.select().from(leads).where(eq(leads.businessId, DEFAULT_BUSINESS_ID)).orderBy(desc(leads.createdAt)).limit(250),
     db.select().from(leadAnalyses).orderBy(desc(leadAnalyses.createdAt)),
@@ -318,7 +321,7 @@ export async function getWorkspacePayload() {
     .map((lead) => (new Date(lead.lastBusinessActivityAt!).getTime() - new Date(lead.createdAt).getTime()) / 3_600_000)
     .filter((value) => Number.isFinite(value) && value >= 0);
   return {
-    business: { ...business, profile: businessRowToProfile(business) },
+    business: { ...business, profile },
     leads: items,
     notifications: notificationRows,
     metrics: {
@@ -368,6 +371,65 @@ async function repairLegacyOrderPricing(profile: BusinessProfile) {
   }
 }
 
+async function repairMissingOrderConfirmations(profile: BusinessProfile) {
+  const db = getDb();
+  const confirmedOrders = await db
+    .select()
+    .from(leads)
+    .where(and(eq(leads.businessId, DEFAULT_BUSINESS_ID), eq(leads.pipelineStatus, "Order Confirmed")))
+    .limit(250);
+  if (!confirmedOrders.length) return;
+  const confirmationDrafts = await db.select().from(replyDrafts).where(eq(replyDrafts.draftType, "order_confirmation"));
+  const existingLeadIds = new Set(confirmationDrafts.map((draft) => draft.leadId));
+  for (const lead of confirmedOrders) {
+    if (!existingLeadIds.has(lead.id)) await ensureOrderConfirmationDraft(lead, profile, "LeadPilot");
+  }
+}
+
+async function ensureOrderConfirmationDraft(
+  lead: typeof leads.$inferSelect,
+  profile: BusinessProfile,
+  actor: string,
+) {
+  const db = getDb();
+  const existing = await db
+    .select()
+    .from(replyDrafts)
+    .where(and(eq(replyDrafts.leadId, lead.id), eq(replyDrafts.draftType, "order_confirmation")))
+    .limit(1);
+  if (existing[0]) return existing[0];
+
+  const now = new Date().toISOString();
+  const [draft] = await db.insert(replyDrafts).values({
+    id: crypto.randomUUID(),
+    leadId: lead.id,
+    draftType: "order_confirmation",
+    subject: "StepFresh order confirmation",
+    message: buildOrderConfirmationMessage({
+      businessName: profile.name,
+      currency: profile.currency,
+      customerName: lead.customerName,
+      expectedValue: lead.expectedValue,
+      location: lead.location,
+      originalMessage: lead.originalMessage,
+      phone: lead.phone,
+      serviceRequested: lead.serviceRequested,
+    }),
+    approvalStatus: "pending",
+    createdAt: now,
+    updatedAt: now,
+  }).returning();
+  await db.update(followUpTasks).set({
+    status: "cancelled",
+    cancelledReason: "Order confirmed",
+  }).where(and(
+    eq(followUpTasks.leadId, lead.id),
+    inArray(followUpTasks.status, ["pending", "waiting_for_approval", "waiting_for_initial_reply"]),
+  ));
+  await recordEvent(lead.id, "order_confirmation_drafted", { draftId: draft.id }, actor);
+  return draft;
+}
+
 export async function updateLead(leadId: string, patch: Record<string, unknown>, actor: string) {
   await ensureSchema();
   const db = getDb();
@@ -413,6 +475,11 @@ export async function updateLead(leadId: string, patch: Record<string, unknown>,
     }).where(eq(leadAnalyses.id, analysisRow[0].id));
   }
   const terminal = ["Delivered", "Cancelled", "Returned", "Lost"].includes(current.pipelineStatus) || current.doNotContact;
+  if (current.pipelineStatus === "Order Confirmed" && existing[0].pipelineStatus !== "Order Confirmed") {
+    const business = await ensureBusiness();
+    await ensureOrderConfirmationDraft(current, businessRowToProfile(business), actor);
+    await db.update(leads).set({ attentionState: "Confirmation Approval", updatedAt: new Date().toISOString() }).where(eq(leads.id, leadId));
+  }
   if (terminal) {
     await db.update(followUpTasks).set({ status: "cancelled", cancelledReason: current.doNotContact ? "Do Not Contact" : `Lead marked ${current.pipelineStatus}` }).where(and(eq(followUpTasks.leadId, leadId), inArray(followUpTasks.status, ["pending", "waiting_for_approval"])));
   }
@@ -444,7 +511,12 @@ export async function approveDraft(leadId: string, message: string, actor: strin
       }
     }
   }
-  await recordEvent(leadId, "reply_approved_and_recorded", { draftId: draft[0].id, edited: message.trim() !== draft[0].message }, actor);
+  await recordEvent(
+    leadId,
+    draft[0].draftType === "order_confirmation" ? "order_confirmation_sent_recorded" : "reply_approved_and_recorded",
+    { draftId: draft[0].id, edited: message.trim() !== draft[0].message },
+    actor,
+  );
   return true;
 }
 
