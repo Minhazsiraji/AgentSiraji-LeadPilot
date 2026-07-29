@@ -83,3 +83,33 @@ test("verified public orders create persistent owner notifications", () => {
   assert.match(app, /unreadNotifications/);
   assert.match(route, /requireOwner/);
 });
+
+test("confirming an order prepares a verified customer confirmation message", async () => {
+  const { buildOrderConfirmationMessage, whatsappMessageUrl } = await import("../lib/order-confirmation.ts");
+  const message = buildOrderConfirmationMessage({
+    businessName: "StepFresh",
+    currency: "BDT",
+    customerName: "Atiar",
+    expectedValue: 800,
+    location: "Savar, Dhaka",
+    originalMessage: "I want 2 bottles. District: Dhaka. Thana/Upazila: Savar. Delivery address: House 12, Road 3, Savar. Payment: Cash on delivery.",
+    phone: "+8801404385101",
+    serviceRequested: "2 bottles — ৳800",
+  });
+  assert.match(message, /Atiar/);
+  assert.match(message, /2 bottles/);
+  assert.match(message, /৳800/);
+  assert.match(message, /Savar, Dhaka/);
+  assert.match(message, /House 12, Road 3, Savar/);
+  assert.match(message, /ক্যাশ অন ডেলিভারি/);
+  assert.doesNotMatch(message, /delivery date|guaranteed/i);
+  assert.match(whatsappMessageUrl("+8801404385101", message), /^https:\/\/wa\.me\/8801404385101\?text=/);
+
+  const data = readFileSync("lib/data.ts", "utf8");
+  const app = readFileSync("app/leadpilot-app.tsx", "utf8");
+  assert.match(data, /ensureOrderConfirmationDraft/);
+  assert.match(data, /order_confirmation_drafted/);
+  assert.match(data, /repairMissingOrderConfirmations/);
+  assert.match(app, /Open WhatsApp/);
+  assert.match(app, /Mark as sent/);
+});
