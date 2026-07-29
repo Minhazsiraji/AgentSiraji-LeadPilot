@@ -52,3 +52,34 @@ test("owner sign-in uses a protected owner route", () => {
   assert.match(ownerPage, /requireChatGPTUser\("\/owner"\)/);
   assert.match(appSource, /href="\/owner"/);
 });
+
+test("owner dashboard exposes a controlled order workflow", async () => {
+  const { isValidOrderTransition, nextOrderStatuses } = await import("../lib/order-workflow.ts");
+  assert.deepEqual(nextOrderStatuses("New"), ["Order Confirmed", "Cancelled"]);
+  assert.equal(isValidOrderTransition("New", "Delivered"), false);
+  assert.equal(isValidOrderTransition("Order Confirmed", "Shipped"), true);
+  assert.equal(isValidOrderTransition("Shipped", "Delivered"), true);
+  assert.equal(isValidOrderTransition("Delivered", "New"), false);
+
+  const app = readFileSync("app/leadpilot-app.tsx", "utf8");
+  const data = readFileSync("lib/data.ts", "utf8");
+  const route = readFileSync("app/api/leads/[id]/route.ts", "utf8");
+  assert.match(app, /Order workflow/);
+  assert.match(app, /nextOrderStatuses/);
+  assert.match(data, /isValidOrderTransition/);
+  assert.match(route, /status: 409/);
+});
+
+test("verified public orders create persistent owner notifications", () => {
+  const data = readFileSync("lib/data.ts", "utf8");
+  const schema = readFileSync("db/schema.ts", "utf8");
+  const app = readFileSync("app/leadpilot-app.tsx", "utf8");
+  const route = readFileSync("app/api/notifications/read/route.ts", "utf8");
+  assert.match(schema, /ownerNotifications/);
+  assert.match(data, /cleanInput\.source === "Facebook order form"/);
+  assert.match(data, /New verified order from/);
+  assert.match(data, /markOwnerNotificationsRead/);
+  assert.match(app, /Order notifications/);
+  assert.match(app, /unreadNotifications/);
+  assert.match(route, /requireOwner/);
+});
