@@ -95,6 +95,16 @@ async function createSchema() {
       type TEXT NOT NULL DEFAULT 'new_order', title TEXT NOT NULL, message TEXT NOT NULL,
       read_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS facebook_contacts (
+      sender_id TEXT PRIMARY KEY, page_id TEXT NOT NULL, lead_id TEXT NOT NULL,
+      customer_name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS facebook_webhook_events (
+      event_id TEXT PRIMARY KEY, sender_id TEXT NOT NULL, page_id TEXT NOT NULL, lead_id TEXT,
+      status TEXT NOT NULL DEFAULT 'processing', received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      processed_at TEXT
+    )`),
     d1.prepare("CREATE INDEX IF NOT EXISTS leads_business_created_idx ON leads (business_id, created_at DESC)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS leads_duplicate_idx ON leads (business_id, normalized_message, email, phone)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS analyses_lead_idx ON lead_analyses (lead_id)"),
@@ -191,7 +201,14 @@ export function businessRowToProfile(row: typeof businesses.$inferSelect): Busin
   };
 }
 
-export async function createLead(input: Omit<LeadInput, "submittedAt"> & { submittedAt?: string; expectedValue?: number }, createdBy: string) {
+export async function createLead(
+  input: Omit<LeadInput, "submittedAt"> & {
+    submittedAt?: string;
+    expectedValue?: number;
+    skipContactlessDuplicate?: boolean;
+  },
+  createdBy: string,
+) {
   const business = await ensureBusiness();
   const profile = businessRowToProfile(business);
   const submittedAt = input.submittedAt ?? new Date().toISOString();
@@ -209,7 +226,7 @@ export async function createLead(input: Omit<LeadInput, "submittedAt"> & { submi
   const duplicate = possibleDuplicates.find((lead) =>
     (cleanInput.email && lead.email === cleanInput.email) ||
     (cleanInput.phone && lead.phone === cleanInput.phone) ||
-    (!cleanInput.email && !cleanInput.phone)
+    (!cleanInput.email && !cleanInput.phone && !input.skipContactlessDuplicate)
   );
   if (duplicate) return { lead: duplicate, duplicate: true };
 
@@ -288,6 +305,16 @@ export async function createLead(input: Omit<LeadInput, "submittedAt"> & { submi
       type: "new_order",
       title: `New verified order from ${cleanInput.customerName}`,
       message: `${cleanInput.phone || "No phone"} · ${orderLabel} · ${profile.currency} ${orderValue.toLocaleString("en-US")} · ${analysis.location || "Location pending"}`,
+      createdAt: submittedAt,
+    });
+  } else if (cleanInput.source === "Facebook Messenger") {
+    await db.insert(ownerNotifications).values({
+      id: crypto.randomUUID(),
+      businessId: DEFAULT_BUSINESS_ID,
+      leadId,
+      type: "new_messenger_enquiry",
+      title: `New Messenger enquiry from ${cleanInput.customerName}`,
+      message: `${analysis.serviceRequested ?? "Product or quantity pending"} · ${analysis.location ?? "Location pending"} · Reply approval required`,
       createdAt: submittedAt,
     });
   }

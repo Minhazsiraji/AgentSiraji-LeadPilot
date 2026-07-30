@@ -10,6 +10,11 @@ export type LeadPilotEnv = {
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
   AI_PROVIDER?: "gemini" | "openai" | "rules";
+  FACEBOOK_VERIFY_TOKEN?: string;
+  FACEBOOK_APP_SECRET?: string;
+  FACEBOOK_PAGE_ACCESS_TOKEN?: string;
+  FACEBOOK_PAGE_ID?: string;
+  FACEBOOK_GRAPH_API_VERSION?: string;
 };
 
 const storageKey = Symbol.for("agentsiraji.leadpilot.request-env");
