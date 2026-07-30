@@ -94,7 +94,7 @@ test("verified public orders create persistent owner notifications", () => {
   assert.match(data, /cleanInput\.source === "Facebook order form"/);
   assert.match(data, /New verified order from/);
   assert.match(data, /markOwnerNotificationsRead/);
-  assert.match(app, /Order notifications/);
+  assert.match(app, /Lead notifications/);
   assert.match(app, /unreadNotifications/);
   assert.match(route, /requireOwner/);
 });
