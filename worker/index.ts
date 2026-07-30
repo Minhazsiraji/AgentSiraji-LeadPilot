@@ -1,6 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { handleFacebookWebhook } from "../lib/facebook-webhook";
 import { runWithCloudflareEnv, type LeadPilotEnv } from "../lib/runtime-env";
 
 interface Env extends LeadPilotEnv {
@@ -39,6 +40,10 @@ const worker = {
           return result.response();
         },
       }, allowedWidths);
+    }
+
+    if (url.pathname === "/api/webhooks/facebook") {
+      return runWithCloudflareEnv(env, () => handleFacebookWebhook(request, env, ctx));
     }
 
     return runWithCloudflareEnv(env, () => handler.fetch(request, env, ctx));
