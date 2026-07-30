@@ -113,3 +113,22 @@ export const ownerNotifications = sqliteTable("owner_notifications", {
   readAt: text("read_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const facebookContacts = sqliteTable("facebook_contacts", {
+  senderId: text("sender_id").primaryKey(),
+  pageId: text("page_id").notNull(),
+  leadId: text("lead_id").notNull(),
+  customerName: text("customer_name").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const facebookWebhookEvents = sqliteTable("facebook_webhook_events", {
+  eventId: text("event_id").primaryKey(),
+  senderId: text("sender_id").notNull(),
+  pageId: text("page_id").notNull(),
+  leadId: text("lead_id"),
+  status: text("status").notNull().default("processing"),
+  receivedAt: text("received_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  processedAt: text("processed_at"),
+});
