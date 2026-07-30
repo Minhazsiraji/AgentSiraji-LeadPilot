@@ -21,6 +21,7 @@ The first real-business preset is StepFresh (`@stepfresh.bd`), a Bangladesh shoe
 - `app/api`: public capture and authenticated owner actions
 - `app/leadpilot-app.tsx`: dashboard, lead detail, approval, import, settings, and analytics UI
 - `app/enquire`: public enquiry experience
+- `lib/facebook-webhook.ts`: signed Facebook Messenger webhook verification, retry deduplication, contact-to-lead linking, and fast background ingestion
 
 ## Safety controls
 
@@ -34,6 +35,24 @@ The first real-business preset is StepFresh (`@stepfresh.bd`), a Bangladesh shoe
 - Customer record deletion
 - CSV row validation and 250-row import limit
 - API keys remain server-side and are never returned to the browser
+- Facebook webhook requests require Meta's SHA-256 signature; repeated delivery event IDs are processed only once
+- Messenger replies attach to the existing lead and still require owner approval before any business response
+
+## Facebook Messenger configuration
+
+The callback endpoint is:
+
+`https://agentsiraji-leadpilot.minhazsiraji.chatgpt.site/api/webhooks/facebook`
+
+Configure these hosted runtime values before subscribing a Page:
+
+- `FACEBOOK_VERIFY_TOKEN`
+- `FACEBOOK_APP_SECRET`
+- `FACEBOOK_PAGE_ACCESS_TOKEN`
+- `FACEBOOK_PAGE_ID`
+- `FACEBOOK_GRAPH_API_VERSION` (optional; defaults to `v26.0`)
+
+Never place Meta tokens or the app secret in source files, GitHub, screenshots, browser code, or `.openai/hosting.json`. The first integration stage receives Messenger text enquiries and prepares replies for human approval; it does not send automatic messages.
 
 ## Optional AI configuration
 
