@@ -167,7 +167,6 @@ export async function claimBusiness(ownerEmail: string) {
     return claimed;
   }
 
-  await seedWorkspace(normalized);
   return business;
 }
 
@@ -394,15 +393,18 @@ async function ensureOrderStatusDraft(
   status: CustomerOrderMessageStatus,
   profile: BusinessProfile,
   actor: string,
+  checkForExisting = true,
 ) {
   const db = getDb();
   const draftType = customerOrderDraftType(status);
-  const existing = await db
-    .select()
-    .from(replyDrafts)
-    .where(and(eq(replyDrafts.leadId, lead.id), eq(replyDrafts.draftType, draftType)))
-    .limit(1);
-  if (existing[0]) return existing[0];
+  if (checkForExisting) {
+    const existing = await db
+      .select()
+      .from(replyDrafts)
+      .where(and(eq(replyDrafts.leadId, lead.id), eq(replyDrafts.draftType, draftType)))
+      .limit(1);
+    if (existing[0]) return existing[0];
+  }
 
   const now = new Date().toISOString();
   const [draft] = await db.insert(replyDrafts).values({
@@ -440,12 +442,15 @@ async function ensureOrderStatusDraft(
   return draft;
 }
 
-export async function updateLead(leadId: string, patch: Record<string, unknown>, actor: string) {
+export async function updateLead(leadId: string, patch: Record<string, unknown>, actor: string, profile?: BusinessProfile) {
   await ensureSchema();
   const db = getDb();
   const existing = await db.select().from(leads).where(and(eq(leads.id, leadId), eq(leads.businessId, DEFAULT_BUSINESS_ID))).limit(1);
   if (!existing[0]) return null;
   const allowedStatuses: PipelineStatus[] = defaultBusinessProfile.pipelineStages;
+  const messageStatuses: CustomerOrderMessageStatus[] = ["Order Confirmed", "Shipped", "Delivered", "Cancelled"];
+  const statusOnly = Object.keys(patch).length === 1 && typeof patch.pipelineStatus === "string";
+  let statusChanged = false;
   const update: Partial<typeof leads.$inferInsert> = { updatedAt: new Date().toISOString() };
   if (typeof patch.customerName === "string" && patch.customerName.trim()) update.customerName = patch.customerName.trim();
   if (typeof patch.email === "string" || patch.email === null) update.email = normalizeEmail(patch.email as string | null);
@@ -459,53 +464,55 @@ export async function updateLead(leadId: string, patch: Record<string, unknown>,
     if (!isValidOrderTransition(existing[0].pipelineStatus as PipelineStatus, nextStatus)) {
       throw new Error(`INVALID_ORDER_TRANSITION:${existing[0].pipelineStatus}:${nextStatus}`);
     }
+    statusChanged = nextStatus !== existing[0].pipelineStatus;
     update.pipelineStatus = nextStatus;
+    if (statusChanged && messageStatuses.includes(nextStatus as CustomerOrderMessageStatus)) {
+      update.attentionState = nextStatus === "Order Confirmed" ? "Confirmation Approval" : "Customer Message Approval";
+    }
   }
   if (typeof patch.doNotContact === "boolean") update.doNotContact = patch.doNotContact;
-  await db.update(leads).set(update).where(eq(leads.id, leadId));
-  const [current] = await db.select().from(leads).where(eq(leads.id, leadId)).limit(1);
+  const [current] = await db.update(leads).set(update).where(eq(leads.id, leadId)).returning();
 
-  const analysisRow = await db.select().from(leadAnalyses).where(eq(leadAnalyses.leadId, leadId)).orderBy(desc(leadAnalyses.createdAt)).limit(1);
-  if (analysisRow[0]) {
-    const previous = safeObject<LeadAnalysis>(analysisRow[0].extractedInformationJson);
-    const knownCount = [current.serviceRequested, current.location, current.preferredDate, current.budgetAmount, current.email || current.phone].filter(Boolean).length;
-    const score = calculateScore({
-      serviceFit: current.serviceRequested ? "supported" : "unknown",
-      purchaseIntent: { level: current.purchaseIntent as "high" | "medium" | "low" },
-      urgency: { level: current.urgency as "high" | "medium" | "low" },
-      knownQualificationCount: knownCount,
-      hasClearAction: true,
-    });
-    const missing = [!current.serviceRequested && "service requested", !current.location && "service location", !current.preferredDate && "preferred date", !current.budgetAmount && "budget or scope", !(current.email || current.phone) && "contact information"].filter(Boolean);
-    await db.update(leads).set({ leadScore: score.total, temperature: temperatureFor(score.total) }).where(eq(leads.id, leadId));
-    await db.update(leadAnalyses).set({
-      extractedInformationJson: JSON.stringify({ ...previous, serviceRequested: current.serviceRequested, location: current.location, preferredDate: current.preferredDate, missingInformation: missing, score, temperature: temperatureFor(score.total) }),
-      missingInformationJson: JSON.stringify(missing),
-      scoreBreakdownJson: JSON.stringify(score),
-    }).where(eq(leadAnalyses.id, analysisRow[0].id));
+  if (!statusOnly) {
+    const analysisRow = await db.select().from(leadAnalyses).where(eq(leadAnalyses.leadId, leadId)).orderBy(desc(leadAnalyses.createdAt)).limit(1);
+    if (analysisRow[0]) {
+      const previous = safeObject<LeadAnalysis>(analysisRow[0].extractedInformationJson);
+      const knownCount = [current.serviceRequested, current.location, current.preferredDate, current.budgetAmount, current.email || current.phone].filter(Boolean).length;
+      const score = calculateScore({
+        serviceFit: current.serviceRequested ? "supported" : "unknown",
+        purchaseIntent: { level: current.purchaseIntent as "high" | "medium" | "low" },
+        urgency: { level: current.urgency as "high" | "medium" | "low" },
+        knownQualificationCount: knownCount,
+        hasClearAction: true,
+      });
+      const missing = [!current.serviceRequested && "service requested", !current.location && "service location", !current.preferredDate && "preferred date", !current.budgetAmount && "budget or scope", !(current.email || current.phone) && "contact information"].filter(Boolean);
+      await db.update(leads).set({ leadScore: score.total, temperature: temperatureFor(score.total) }).where(eq(leads.id, leadId));
+      await db.update(leadAnalyses).set({
+        extractedInformationJson: JSON.stringify({ ...previous, serviceRequested: current.serviceRequested, location: current.location, preferredDate: current.preferredDate, missingInformation: missing, score, temperature: temperatureFor(score.total) }),
+        missingInformationJson: JSON.stringify(missing),
+        scoreBreakdownJson: JSON.stringify(score),
+      }).where(eq(leadAnalyses.id, analysisRow[0].id));
+    }
   }
   const terminal = ["Delivered", "Cancelled", "Returned", "Lost"].includes(current.pipelineStatus) || current.doNotContact;
-  const messageStatuses: CustomerOrderMessageStatus[] = ["Order Confirmed", "Shipped", "Delivered", "Cancelled"];
   if (
-    current.pipelineStatus !== existing[0].pipelineStatus
+    statusChanged
     && messageStatuses.includes(current.pipelineStatus as CustomerOrderMessageStatus)
   ) {
-    const business = await ensureBusiness();
+    const orderProfile = profile ?? businessRowToProfile(await ensureBusiness());
     await ensureOrderStatusDraft(
       current,
       current.pipelineStatus as CustomerOrderMessageStatus,
-      businessRowToProfile(business),
+      orderProfile,
       actor,
+      false,
     );
-    await db.update(leads).set({
-      attentionState: current.pipelineStatus === "Order Confirmed" ? "Confirmation Approval" : "Customer Message Approval",
-      updatedAt: new Date().toISOString(),
-    }).where(eq(leads.id, leadId));
   }
   if (terminal) {
     await db.update(followUpTasks).set({ status: "cancelled", cancelledReason: current.doNotContact ? "Do Not Contact" : `Lead marked ${current.pipelineStatus}` }).where(and(eq(followUpTasks.leadId, leadId), inArray(followUpTasks.status, ["pending", "waiting_for_approval"])));
   }
   await recordEvent(leadId, "lead_updated", { changed: Object.keys(update), pipelineStatus: current.pipelineStatus, doNotContact: current.doNotContact }, actor);
+  if (statusOnly) return current;
   return (await db.select().from(leads).where(eq(leads.id, leadId)).limit(1))[0];
 }
 
