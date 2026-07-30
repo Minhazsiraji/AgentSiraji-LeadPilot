@@ -1,5 +1,5 @@
 import { apiError, requireOwner } from "../../../../lib/api-auth";
-import { deleteLead, updateLead } from "../../../../lib/data";
+import { businessRowToProfile, deleteLead, updateLead } from "../../../../lib/data";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -8,7 +8,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     const auth = await requireOwner(request);
     if ("response" in auth) return auth.response;
     const { id } = await context.params;
-    const updated = await updateLead(id, await request.json() as Record<string, unknown>, auth.user.email);
+    const updated = await updateLead(id, await request.json() as Record<string, unknown>, auth.user.email, businessRowToProfile(auth.business));
     return updated ? Response.json({ lead: updated }) : Response.json({ error: "Lead not found." }, { status: 404 });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("INVALID_ORDER_TRANSITION:")) {

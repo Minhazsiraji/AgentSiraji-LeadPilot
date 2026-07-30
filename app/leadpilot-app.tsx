@@ -79,9 +79,9 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const previewLeads = useMemo(() => makePreviewLeads(new Date(initialNow).getTime()), [initialNow]);
 
-  const refreshWorkspace = useCallback(async () => {
+  const refreshWorkspace = useCallback(async (showLoading = false) => {
     if (!user) return;
-    setLoading(true);
+    if (showLoading) setLoading(true);
     try {
       const response = await fetch("/api/workspace", { cache: "no-store" });
       const result = await response.json() as WorkspacePayload & { error?: string };
@@ -91,12 +91,12 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
       setNoticeNeedsSignIn(false);
       setNotice(error instanceof Error ? error.message : "Could not load the workspace.");
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }, [user]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void refreshWorkspace(), 0);
+    const timer = window.setTimeout(() => void refreshWorkspace(true), 0);
     return () => window.clearTimeout(timer);
   }, [refreshWorkspace]);
 
@@ -157,17 +157,35 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
   }
 
   async function openNotification(item: OwnerNotification) {
-    if (!item.readAt) {
-      await apiJson("/api/notifications/read", { method: "POST", body: JSON.stringify({ notificationId: item.id }) });
-    }
     setNotificationsOpen(false);
     setSelectedLeadId(item.leadId);
-    await refreshWorkspace();
+    if (!item.readAt) {
+      const readAt = new Date().toISOString();
+      setWorkspace((current) => current ? {
+        ...current,
+        notifications: current.notifications.map((notification) => notification.id === item.id ? { ...notification, readAt } : notification),
+      } : current);
+      try {
+        await apiJson("/api/notifications/read", { method: "POST", body: JSON.stringify({ notificationId: item.id }) });
+      } catch (error) {
+        setNotice(errorMessage(error));
+        void refreshWorkspace();
+      }
+    }
   }
 
   async function markAllNotificationsRead() {
-    await apiJson("/api/notifications/read", { method: "POST", body: "{}" });
-    await refreshWorkspace();
+    const readAt = new Date().toISOString();
+    setWorkspace((current) => current ? {
+      ...current,
+      notifications: current.notifications.map((notification) => ({ ...notification, readAt: notification.readAt ?? readAt })),
+    } : current);
+    try {
+      await apiJson("/api/notifications/read", { method: "POST", body: "{}" });
+    } catch (error) {
+      setNotice(errorMessage(error));
+      void refreshWorkspace();
+    }
   }
 
   return (
@@ -245,7 +263,14 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
       {modal === "add" ? <AddLeadModal onClose={() => setModal(null)} onComplete={async (message) => { setModal(null); setNotice(message); await refreshWorkspace(); }} /> : null}
       {modal === "import" ? <ImportModal onClose={() => setModal(null)} onComplete={async (message) => { setModal(null); setNotice(message); await refreshWorkspace(); }} /> : null}
       {modal === "settings" && workspace ? <SettingsModal profile={workspace.business.profile} onClose={() => setModal(null)} onComplete={async (message) => { setModal(null); setNotice(message); await refreshWorkspace(); }} /> : null}
-      {selectedLead ? <LeadDrawer key={`${selectedLead.id}:${selectedLead.draft?.id ?? "none"}`} lead={selectedLead} currency={currency} offeringLabel={offeringLabel} onClose={() => setSelectedLeadId(null)} onChanged={async (message) => { setNotice(message); await refreshWorkspace(); }} /> : null}
+      {selectedLead ? <LeadDrawer key={`${selectedLead.id}:${selectedLead.draft?.id ?? "none"}`} lead={selectedLead} currency={currency} offeringLabel={offeringLabel} onClose={() => setSelectedLeadId(null)} onStatusChange={(status) => setWorkspace((current) => current ? {
+        ...current,
+        leads: current.leads.map((item) => item.id === selectedLead.id ? {
+          ...item,
+          pipelineStatus: status as LeadStatus,
+          attentionState: status === "Order Confirmed" ? "Confirmation Approval" : ["Shipped", "Delivered", "Cancelled"].includes(status) ? "Customer Message Approval" : item.attentionState,
+        } : item),
+      } : current)} onChanged={(message) => { setNotice(message); void refreshWorkspace(); }} /> : null}
     </main>
   );
 }
@@ -295,7 +320,7 @@ function SettingsModal({ profile, onClose, onComplete }: { profile: BusinessProf
   return <Modal title="Business settings" eyebrow="AI guardrails" onClose={onClose} wide><form className="modal-form" onSubmit={submit}><div className="form-grid"><Field defaultValue={profile.name} label="Business name" name="name" required /><Field defaultValue={profile.currency} label="Currency" maxLength={3} name="currency" required /></div><label>Business description<textarea defaultValue={profile.description} name="description" rows={3} /></label><div className="form-grid"><Field defaultValue={profile.timezone} label="Timezone" name="timezone" /><Field defaultValue={profile.businessHours} label="Opening hours" name="businessHours" /></div><Field defaultValue={profile.responseTone} label="Response tone" name="responseTone" /><label>Services offered, comma separated<textarea defaultValue={profile.services.join(", ")} name="services" rows={3} /></label><label>Services not offered, comma separated<textarea defaultValue={profile.excludedServices.join(", ")} name="excludedServices" rows={2} /></label><Field defaultValue={profile.serviceAreas.join(", ")} label="Service areas, comma separated" name="serviceAreas" /><Field defaultValue={profile.followUpDays.join(", ")} label="Follow-up days" name="followUpDays" /><label>Prohibited claims, one per line<textarea defaultValue={profile.prohibitedClaims.join("\n")} name="prohibitedClaims" rows={3} /></label><ModalActions busy={busy} error={error} onClose={onClose} submit="Save guardrails" /></form></Modal>;
 }
 
-function LeadDrawer({ lead, currency, offeringLabel, onClose, onChanged }: { lead: PreviewLead; currency: string; offeringLabel: string; onClose: () => void; onChanged: (message: string) => Promise<void> }) {
+function LeadDrawer({ lead, currency, offeringLabel, onClose, onChanged, onStatusChange }: { lead: PreviewLead; currency: string; offeringLabel: string; onClose: () => void; onChanged: (message: string) => void; onStatusChange: (status: PipelineStatus) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [draft, setDraft] = useState(lead.draft?.message ?? "");
@@ -309,7 +334,20 @@ function LeadDrawer({ lead, currency, offeringLabel, onClose, onChanged }: { lea
   const whatsappUrl = isCustomerOrderMessage ? whatsappMessageUrl(lead.phone, draft) : null;
   async function action(url: string, init: RequestInit, success: string) {
     setBusy(true); setError("");
-    try { await apiJson(url, init); await onChanged(success); setBusy(false); } catch (caught) { setError(errorMessage(caught)); setBusy(false); }
+    try { await apiJson(url, init); onChanged(success); setBusy(false); } catch (caught) { setError(errorMessage(caught)); setBusy(false); }
+  }
+  async function transitionStatus(status: PipelineStatus) {
+    const previousStatus = lead.pipelineStatus as PipelineStatus;
+    setBusy(true); setError(""); onStatusChange(status);
+    try {
+      await apiJson(`/api/leads/${lead.id}`, { method: "PATCH", body: JSON.stringify({ pipelineStatus: status }) });
+      onChanged(`Order moved to ${status}.`);
+    } catch (caught) {
+      onStatusChange(previousStatus);
+      setError(errorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
   }
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget).entries());
@@ -322,7 +360,7 @@ function LeadDrawer({ lead, currency, offeringLabel, onClose, onChanged }: { lea
   return <div className="drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><aside aria-labelledby="lead-detail-title" aria-modal="true" className="lead-drawer" role="dialog"><header className="drawer-header"><div><p className="eyebrow">{lead.temperature} · {lead.leadScore}/100</p><h2 id="lead-detail-title">{lead.customerName}</h2><p>{lead.attentionState}</p></div><button aria-label="Close lead details" onClick={onClose} type="button">×</button></header><div className="drawer-scroll">
     {error ? <div className="form-result form-result-error" role="alert">{error}</div> : null}
     <section className="detail-section"><p className="detail-label">Original enquiry</p><blockquote>{lead.originalMessage}</blockquote></section>
-    <section className="detail-section order-workflow"><div className="detail-section-heading"><div><p className="detail-label">Order workflow</p><h3>{lead.pipelineStatus}</h3></div><span className={`status status-${lead.pipelineStatus.toLowerCase().replace(" ", "-")}`}>{nextStatuses.length ? "Action needed" : "Complete"}</span></div><div className="workflow-track">{["New", "Order Confirmed", "Shipped", "Delivered"].map((status) => <span className={status === lead.pipelineStatus ? "is-current" : ""} key={status}>{status}</span>)}</div>{nextStatuses.length ? <div className="inline-actions">{nextStatuses.map((status) => <button className={status === "Cancelled" ? "button button-quiet workflow-cancel" : "button button-primary"} disabled={busy} key={status} onClick={() => void action(`/api/leads/${lead.id}`, { method: "PATCH", body: JSON.stringify({ pipelineStatus: status }) }, `Order moved to ${status}.`)} type="button">{orderStatusAction(status)}</button>)}</div> : <p className="workflow-complete">No further action is required for this order.</p>}</section>
+    <section aria-busy={busy} className="detail-section order-workflow"><div className="detail-section-heading"><div><p className="detail-label">Order workflow</p><h3>{lead.pipelineStatus}</h3></div><span className={`status status-${lead.pipelineStatus.toLowerCase().replace(" ", "-")}`}>{busy ? "Saving…" : nextStatuses.length ? "Action needed" : "Complete"}</span></div><div className="workflow-track">{["New", "Order Confirmed", "Shipped", "Delivered"].map((status) => <span className={status === lead.pipelineStatus ? "is-current" : ""} key={status}>{status}</span>)}</div>{nextStatuses.length ? <div className="inline-actions">{nextStatuses.map((status) => <button className={status === "Cancelled" ? "button button-quiet workflow-cancel" : "button button-primary"} disabled={busy} key={status} onClick={() => void transitionStatus(status)} type="button">{orderStatusAction(status)}</button>)}</div> : <p className="workflow-complete">{busy ? "Saving this status…" : "No further action is required for this order."}</p>}</section>
     <section className="detail-section"><div className="detail-section-heading"><div><p className="detail-label">LeadPilot analysis</p><h3>Transparent score</h3></div><span className={`score score-${lead.temperature.toLowerCase()}`}>{score.total}</span></div><div className="score-grid"><ScorePart label="Service fit" value={score.serviceFit} max={30} /><ScorePart label="Purchase intent" value={score.purchaseIntent} max={25} /><ScorePart label="Urgency" value={score.urgency} max={20} /><ScorePart label="Completeness" value={score.completeness} max={15} /><ScorePart label="Engagement" value={score.engagement} max={10} /></div><div className="analysis-meta"><span>Confidence: <strong>{lead.analysis?.confidence ?? "—"}</strong></span><span>Engine: <strong>{lead.analysis?.modelUsed ?? "—"}</strong></span></div>{missing.length ? <div className="missing-box"><strong>Missing information</strong><span>{missing.join(" · ")}</span></div> : null}<p className="recommendation">{lead.analysis?.recommendedNextAction || String(analysis.recommendedNextAction || "Review the lead.")}</p></section>
     <section className="detail-section"><p className="detail-label">Editable facts</p><form className="modal-form compact" onSubmit={save}><div className="form-grid"><Field defaultValue={lead.customerName} label="Customer name" name="customerName" required /><Field defaultValue={lead.email ?? ""} label="Email" name="email" type="email" /></div><div className="form-grid"><Field defaultValue={lead.phone ?? ""} label="Phone" name="phone" /><Field defaultValue={lead.serviceRequested ?? ""} label={offeringLabel} name="serviceRequested" /></div><div className="form-grid"><Field defaultValue={lead.location ?? ""} label="Delivery / service location" name="location" /><Field defaultValue={lead.preferredDate ?? ""} label="Needed date" name="preferredDate" type="date" /></div><Field defaultValue={String(lead.expectedValue)} label={`Expected value (${currency})`} min="0" name="expectedValue" type="number" /><input name="pipelineStatus" type="hidden" value={lead.pipelineStatus} /><label className="check-label"><input defaultChecked={lead.doNotContact} name="doNotContact" type="checkbox" /> Do not contact this customer</label><button className="button button-secondary" disabled={busy} type="submit">Save corrections</button></form></section>
     {lead.draft ? <section className={isCustomerOrderMessage ? "detail-section confirmation-section" : "detail-section"}><div className="detail-section-heading"><div><p className="detail-label">{isCustomerOrderMessage ? "Customer message" : "Reply draft"}</p><h3>{isCustomerOrderMessage ? customerMessageTitle : lead.draft.approvalStatus === "approved" ? "Approved response" : "Owner approval required"}</h3></div><span className={`approval-pill approval-${lead.draft.approvalStatus}`}>{lead.draft.approvalStatus === "approved" ? "sent" : "ready to send"}</span></div>{isCustomerOrderMessage ? <p className="confirmation-note">Prepared automatically from verified order facts. Review it before sending.</p> : null}<textarea className="draft-editor" onChange={(event) => setDraft(event.target.value)} rows={isCustomerOrderMessage ? 13 : 10} value={draft} /><div className="inline-actions">{isCustomerOrderMessage && whatsappUrl && lead.draft.approvalStatus !== "approved" ? <a className="button button-whatsapp" href={whatsappUrl} rel="noreferrer" target="_blank">Open WhatsApp</a> : null}<button className="button button-quiet" onClick={() => void navigator.clipboard.writeText(draft)} type="button">{isCustomerOrderMessage ? "Copy message" : "Copy reply"}</button><button className="button button-primary" disabled={busy || lead.draft.approvalStatus === "approved" || lead.doNotContact || lead.possibleSpam} onClick={() => void action(`/api/leads/${lead.id}/approve`, { method: "POST", body: JSON.stringify({ message: draft }) }, isCustomerOrderMessage ? `${customerMessageTitle} recorded as sent.` : "Reply approved, contact recorded, and follow-up activated.")} type="button">{isCustomerOrderMessage ? "Mark as sent" : "Approve & record contact"}</button></div></section> : <section className="detail-section warning-section"><strong>No reply was created.</strong><span>This lead is spam, Do Not Contact, or needs manual review.</span></section>}

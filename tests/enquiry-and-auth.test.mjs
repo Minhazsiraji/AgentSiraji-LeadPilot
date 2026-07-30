@@ -70,6 +70,21 @@ test("owner dashboard exposes a controlled order workflow", async () => {
   assert.match(route, /status: 409/);
 });
 
+test("order workflow actions update immediately and use the fast server path", () => {
+  const app = readFileSync("app/leadpilot-app.tsx", "utf8");
+  const data = readFileSync("lib/data.ts", "utf8");
+  const route = readFileSync("app/api/leads/[id]/route.ts", "utf8");
+  assert.match(app, /onStatusChange\(status\)/);
+  assert.match(app, /onStatusChange\(previousStatus\)/);
+  assert.match(app, /void refreshWorkspace\(\)/);
+  assert.doesNotMatch(app, /await onChanged\(success\)/);
+  assert.match(data, /const statusOnly = Object\.keys\(patch\)\.length === 1/);
+  assert.match(data, /if \(!statusOnly\)/);
+  assert.match(data, /if \(statusOnly\) return current/);
+  assert.match(data, /checkForExisting = true/);
+  assert.match(route, /businessRowToProfile\(auth\.business\)/);
+});
+
 test("verified public orders create persistent owner notifications", () => {
   const data = readFileSync("lib/data.ts", "utf8");
   const schema = readFileSync("db/schema.ts", "utf8");
