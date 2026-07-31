@@ -17,6 +17,11 @@ export type LeadPilotEnv = {
   FACEBOOK_GRAPH_API_VERSION?: string;
   WEBSITE_INGEST_KEY?: string;
   WEBSITE_ALLOWED_ORIGINS?: string;
+  WHATSAPP_VERIFY_TOKEN?: string;
+  WHATSAPP_ACCESS_TOKEN?: string;
+  WHATSAPP_PHONE_NUMBER_ID?: string;
+  WHATSAPP_BUSINESS_ACCOUNT_ID?: string;
+  WHATSAPP_GRAPH_API_VERSION?: string;
 };
 
 const storageKey = Symbol.for("agentsiraji.leadpilot.request-env");
