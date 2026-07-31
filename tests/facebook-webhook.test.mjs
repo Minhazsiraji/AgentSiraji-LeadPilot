@@ -3,10 +3,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   extractFacebookMessages,
+  shouldStartNewMessengerOrder,
   verifyFacebookSignature,
   verifyFacebookWebhook,
 } from "../lib/facebook-webhook-core.ts";
-import { shouldStartNewMessengerOrder } from "../lib/facebook-webhook.ts";
 
 test("Facebook webhook verification returns Meta's challenge only for the configured token", () => {
   const env = { FACEBOOK_VERIFY_TOKEN: "leadpilot-secret" };
@@ -84,19 +84,9 @@ test("Messenger text events are extracted for the configured Page and echoes are
 });
 
 test("a completed Messenger customer can place a new order without losing normal replies", () => {
-  const services = ["1 bottle — ৳450", "2 bottles — ৳800"];
-  assert.equal(
-    shouldStartNewMessengerOrder("I want to order 2 bottles", "Delivered", services),
-    true,
-  );
-  assert.equal(
-    shouldStartNewMessengerOrder("Thanks, received it", "Delivered", services),
-    false,
-  );
-  assert.equal(
-    shouldStartNewMessengerOrder("I want to order 2 bottles", "Order Confirmed", services),
-    false,
-  );
+  assert.equal(shouldStartNewMessengerOrder("Delivered", true), true);
+  assert.equal(shouldStartNewMessengerOrder("Delivered", false), false);
+  assert.equal(shouldStartNewMessengerOrder("Order Confirmed", true), false);
 });
 
 test("Facebook integration is wired for fast acknowledgement, persistent deduplication and human review", () => {
