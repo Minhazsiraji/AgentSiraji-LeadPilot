@@ -11,6 +11,7 @@ import {
 } from "./data";
 import {
   extractFacebookMessages,
+  shouldStartNewMessengerOrder,
   verifyFacebookSignature,
   verifyFacebookWebhook,
   type FacebookMessageEvent,
@@ -21,27 +22,6 @@ import type { LeadPilotEnv } from "./runtime-env";
 type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
 };
-
-const terminalPipelineStatuses = new Set([
-  "Delivered",
-  "Cancelled",
-  "Returned",
-  "Lost",
-  "Closed Won",
-  "Closed Lost",
-]);
-
-export function shouldStartNewMessengerOrder(
-  message: string,
-  pipelineStatus: string | null | undefined,
-  services: string[],
-) {
-  return Boolean(
-    pipelineStatus
-    && terminalPipelineStatuses.has(pipelineStatus)
-    && inferConfiguredOrder(message, services),
-  );
-}
 
 export async function handleFacebookWebhook(
   request: Request,
@@ -129,10 +109,10 @@ async function processFacebookMessage(event: FacebookMessageEvent, env: LeadPilo
   let startNewLead = !existingContact[0] || !linkedLead[0];
   if (!startNewLead && linkedLead[0]) {
     const profile = businessRowToProfile(await ensureBusiness());
+    const configuredOrder = inferConfiguredOrder(event.text, profile.services);
     startNewLead = shouldStartNewMessengerOrder(
-      event.text,
       linkedLead[0].pipelineStatus,
-      profile.services,
+      Boolean(configuredOrder),
     );
   }
 
