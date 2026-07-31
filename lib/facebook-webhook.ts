@@ -11,6 +11,7 @@ import {
 } from "./data";
 import {
   extractFacebookMessages,
+  hasExplicitMessengerOrderIntent,
   shouldStartNewMessengerOrder,
   verifyFacebookSignature,
   verifyFacebookWebhook,
@@ -110,9 +111,11 @@ async function processFacebookMessage(event: FacebookMessageEvent, env: LeadPilo
   if (!startNewLead && linkedLead[0]) {
     const profile = businessRowToProfile(await ensureBusiness());
     const configuredOrder = inferConfiguredOrder(event.text, profile.services);
+    const hasNewOrderSignal = Boolean(configuredOrder)
+      || hasExplicitMessengerOrderIntent(event.text);
     startNewLead = shouldStartNewMessengerOrder(
       linkedLead[0].pipelineStatus,
-      Boolean(configuredOrder),
+      hasNewOrderSignal,
     );
   }
 
