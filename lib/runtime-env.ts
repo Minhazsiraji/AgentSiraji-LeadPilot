@@ -15,6 +15,8 @@ export type LeadPilotEnv = {
   FACEBOOK_PAGE_ACCESS_TOKEN?: string;
   FACEBOOK_PAGE_ID?: string;
   FACEBOOK_GRAPH_API_VERSION?: string;
+  WEBSITE_INGEST_KEY?: string;
+  WEBSITE_ALLOWED_ORIGINS?: string;
 };
 
 const storageKey = Symbol.for("agentsiraji.leadpilot.request-env");
