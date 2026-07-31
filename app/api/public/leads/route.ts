@@ -23,7 +23,7 @@ export async function POST(request: Request) {
       source,
     }, source);
     if (!result.duplicate) {
-      await updateLead(result.lead.id, { location }, source);
+      await updateLead(result.lead.id, { location: `${order.thana}, ${order.district}` }, source);
       await notifyWebsiteLead({ ...result.lead, location }, source, "landing_order");
     }
     return Response.json({
