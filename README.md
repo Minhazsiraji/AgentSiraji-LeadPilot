@@ -18,9 +18,11 @@ The first real-business preset is StepFresh (`@stepfresh.bd`), a Bangladesh shoe
 - `lib/openai.ts`: Gemini/OpenAI provider adapter with structured extraction, bounded retry, and rules fallback
 - `lib/data.ts`: D1 persistence, audit history, workflow guards, approval, follow-up sequencing, settings, and deletion
 - `lib/csv.ts`: quoted CSV parsing and row validation
-- `app/api`: public capture and authenticated owner actions
+- `lib/website-lead.ts`: generic website-form validation, field aliases, source labelling, origin checks, and API-key verification
+- `app/api`: public capture, secure website intake, webhooks, and authenticated owner actions
 - `app/leadpilot-app.tsx`: dashboard, lead detail, approval, import, settings, and analytics UI
-- `app/enquire`: public enquiry experience
+- `app/enquire`: StepFresh order landing page
+- `app/lead-form`: reusable hosted form for a configured client business
 - `lib/facebook-webhook.ts`: signed Facebook Messenger webhook verification, retry deduplication, contact-to-lead linking, and fast background ingestion
 
 ## Safety controls
@@ -37,6 +39,7 @@ The first real-business preset is StepFresh (`@stepfresh.bd`), a Bangladesh shoe
 - API keys remain server-side and are never returned to the browser
 - Facebook webhook requests require Meta's SHA-256 signature; repeated delivery event IDs are processed only once
 - Messenger replies attach to the existing lead and still require owner approval before any business response
+- Website integration secrets are checked server-side and browser origins can be restricted
 
 ## Facebook Messenger configuration
 
@@ -53,6 +56,20 @@ Configure these hosted runtime values before subscribing a Page:
 - `FACEBOOK_GRAPH_API_VERSION` (optional; defaults to `v26.0`)
 
 Never place Meta tokens or the app secret in source files, GitHub, screenshots, browser code, or `.openai/hosting.json`. The first integration stage receives Messenger text enquiries and prepares replies for human approval; it does not send automatic messages.
+
+## Website and landing-page connectors
+
+- StepFresh order landing page: `/enquire`
+- Reusable hosted client form: `/lead-form?source=Client%20Website`
+- Secure custom-form endpoint: `POST /api/integrations/website-leads`
+- Public same-origin hosted-form endpoint: `POST /api/public/website-leads`
+
+Configure these hosted values for the secure custom-form endpoint:
+
+- `WEBSITE_INGEST_KEY`: long random server-side secret
+- `WEBSITE_ALLOWED_ORIGINS`: comma-separated HTTPS domains
+
+Do not expose `WEBSITE_INGEST_KEY` in browser code. Websites without a backend should link to or embed `/lead-form`. Full setup examples and the per-client deployment model are documented in `docs/website-connectors.md`.
 
 ## Optional AI configuration
 
@@ -79,4 +96,4 @@ npm run lint
 npm test
 ```
 
-The test suite covers clear Hot leads, vague enquiries, unsupported services, relative dates, missing budgets, duplicate normalisation, Do Not Contact, spam, safe reply constraints, follow-up tone, score thresholds, CSV validation, and rendered output.
+The test suite covers clear Hot leads, vague enquiries, unsupported services, relative dates, missing budgets, duplicate normalisation, Do Not Contact, spam, safe reply constraints, follow-up tone, score thresholds, CSV validation, rendered output, Messenger repeat orders, public data deletion, and website connector validation.
