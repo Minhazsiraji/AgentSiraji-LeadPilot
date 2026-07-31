@@ -17,15 +17,17 @@ export default function IntegrationHealthPanel() {
   const [healthState, setHealthState] = useState<LoadState>("idle");
   const [smokeState, setSmokeState] = useState<LoadState>("idle");
   const [error, setError] = useState("");
-  const [manualDone, setManualDone] = useState<Record<string, boolean>>({});
-
-  useEffect(() => {
+  const [manualDone, setManualDone] = useState<Record<string, boolean>>(() => {
+    if (typeof window === "undefined") return {};
     try {
       const stored = window.localStorage.getItem("leadpilot-deployment-smoke-checks");
-      if (stored) setManualDone(JSON.parse(stored) as Record<string, boolean>);
+      return stored ? JSON.parse(stored) as Record<string, boolean> : {};
     } catch {
-      // Local completion state is optional.
+      return {};
     }
+  });
+
+  useEffect(() => {
     void refreshHealth();
   }, []);
 
