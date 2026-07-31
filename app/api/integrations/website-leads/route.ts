@@ -1,6 +1,6 @@
-import { apiError } from "../../../../../lib/api-auth";
-import { createLead, updateLead } from "../../../../../lib/data";
-import { getCloudflareEnv } from "../../../../../lib/runtime-env";
+import { apiError } from "../../../../lib/api-auth";
+import { createLead, updateLead } from "../../../../lib/data";
+import { getCloudflareEnv } from "../../../../lib/runtime-env";
 import {
   allowedWebsiteOrigin,
   bearerToken,
@@ -8,8 +8,8 @@ import {
   verifyWebsiteIngestKey,
   websiteLeadMessage,
   websiteLeadSource,
-} from "../../../../../lib/website-lead";
-import { notifyWebsiteLead } from "../../../../../lib/website-lead-notification";
+} from "../../../../lib/website-lead";
+import { notifyWebsiteLead } from "../../../../lib/website-lead-notification";
 
 export async function OPTIONS(request: Request) {
   const env = getCloudflareEnv();
