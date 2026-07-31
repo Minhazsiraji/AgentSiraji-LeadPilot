@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   extractFacebookMessages,
+  shouldStartNewMessengerOrder,
   verifyFacebookSignature,
   verifyFacebookWebhook,
 } from "../lib/facebook-webhook-core.ts";
@@ -82,6 +83,12 @@ test("Messenger text events are extracted for the configured Page and echoes are
   }]);
 });
 
+test("a completed Messenger customer can place a new order without losing normal replies", () => {
+  assert.equal(shouldStartNewMessengerOrder("Delivered", true), true);
+  assert.equal(shouldStartNewMessengerOrder("Delivered", false), false);
+  assert.equal(shouldStartNewMessengerOrder("Order Confirmed", true), false);
+});
+
 test("Facebook integration is wired for fast acknowledgement, persistent deduplication and human review", () => {
   const worker = readFileSync("worker/index.ts", "utf8");
   const webhook = readFileSync("lib/facebook-webhook.ts", "utf8");
@@ -96,6 +103,8 @@ test("Facebook integration is wired for fast acknowledgement, persistent dedupli
   assert.match(webhook, /facebookWebhookEvents/);
   assert.match(webhook, /onConflictDoNothing/);
   assert.match(webhook, /recordCustomerReply/);
+  assert.match(webhook, /shouldStartNewMessengerOrder/);
+  assert.match(webhook, /!linkedLead\[0\]/);
   assert.match(schema, /facebookContacts/);
   assert.match(schema, /facebookWebhookEvents/);
   assert.match(data, /New Messenger enquiry from/);

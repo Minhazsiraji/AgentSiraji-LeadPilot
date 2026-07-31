@@ -10,6 +10,26 @@ type FacebookWebhookEnv = {
   FACEBOOK_VERIFY_TOKEN?: string;
 };
 
+const terminalPipelineStatuses = new Set([
+  "Delivered",
+  "Cancelled",
+  "Returned",
+  "Lost",
+  "Closed Won",
+  "Closed Lost",
+]);
+
+export function shouldStartNewMessengerOrder(
+  pipelineStatus: string | null | undefined,
+  hasConfiguredOrder: boolean,
+) {
+  return Boolean(
+    pipelineStatus
+    && terminalPipelineStatuses.has(pipelineStatus)
+    && hasConfiguredOrder,
+  );
+}
+
 export function verifyFacebookWebhook(request: Request, env: FacebookWebhookEnv): Response {
   const verifyToken = env.FACEBOOK_VERIFY_TOKEN?.trim();
   if (!verifyToken) return new Response("Facebook integration is not configured.", { status: 503 });
