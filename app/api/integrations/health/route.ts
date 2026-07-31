@@ -1,5 +1,5 @@
-import { apiError, requireOwner } from "../../../../../lib/api-auth";
-import { getIntegrationHealth } from "../../../../../lib/integration-health";
+import { apiError, requireOwner } from "../../../../lib/api-auth";
+import { getIntegrationHealth } from "../../../../lib/integration-health";
 
 export async function GET(request: Request) {
   try {
