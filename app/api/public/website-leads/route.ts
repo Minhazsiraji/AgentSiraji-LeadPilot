@@ -1,6 +1,7 @@
 import { apiError } from "../../../../../lib/api-auth";
 import { createLead, updateLead } from "../../../../../lib/data";
 import { validateWebsiteLead, websiteLeadMessage, websiteLeadSource } from "../../../../../lib/website-lead";
+import { notifyWebsiteLead } from "../../../../../lib/website-lead-notification";
 
 export async function POST(request: Request) {
   try {
@@ -20,8 +21,9 @@ export async function POST(request: Request) {
       expectedValue: input.expectedValue,
     }, source);
 
-    if (!result.duplicate && input.location) {
-      await updateLead(result.lead.id, { location: input.location }, source);
+    if (!result.duplicate) {
+      if (input.location) await updateLead(result.lead.id, { location: input.location }, source);
+      await notifyWebsiteLead({ ...result.lead, location: input.location || result.lead.location }, source, "website_lead");
     }
 
     return Response.json({
