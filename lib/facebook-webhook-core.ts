@@ -19,14 +19,28 @@ const terminalPipelineStatuses = new Set([
   "Closed Lost",
 ]);
 
+const quantityAndUnitPattern = /\b(?:\d+|one|two|three|four|five)\s*(?:bottles?|packs?|pieces?|pcs)\b/i;
+const explicitOrderPatterns = [
+  /\b(?:i\s+)?(?:want|need|would\s+like|like)\s+to\s+(?:order|buy|purchase|get|take)\b/i,
+  /\b(?:can|could|may)\s+i\s+(?:order|buy|purchase|get|take)\b/i,
+  /\b(?:please\s+)?(?:order|buy|purchase)\s+(?:\d+|one|two|three|four|five)\b/i,
+  /\b(?:order\s+(?:korte|korbo)|nite|kinte)\s+chai\b/i,
+  /(?:অর্ডার|কিনতে|নিতে).*(?:চাই|চাইছি|করবো)/u,
+];
+
+export function hasExplicitMessengerOrderIntent(message: string) {
+  if (!quantityAndUnitPattern.test(message)) return false;
+  return explicitOrderPatterns.some((pattern) => pattern.test(message));
+}
+
 export function shouldStartNewMessengerOrder(
   pipelineStatus: string | null | undefined,
-  hasConfiguredOrder: boolean,
+  hasNewOrderSignal: boolean,
 ) {
   return Boolean(
     pipelineStatus
     && terminalPipelineStatuses.has(pipelineStatus)
-    && hasConfiguredOrder,
+    && hasNewOrderSignal,
   );
 }
 
