@@ -12,9 +12,24 @@ export async function POST(request: Request) {
     if (!validation.ok) return Response.json({ error: validation.error }, { status: 400 });
     const order = validation.order;
     const message = publicOrderMessage(order);
-    const result = await createLead({ customerName: order.customerName, email: "", phone: order.phone, message, source: "Facebook order form" }, "Public form");
-    if (!result.duplicate) await updateLead(result.lead.id, { location: `${order.thana}, ${order.district}` }, "Public form");
-    return Response.json({ ok: true, duplicate: result.duplicate, message: result.duplicate ? "We already received this order request and will follow it up." : "Your order request has been received. StepFresh will confirm it before dispatch." }, { status: result.duplicate ? 200 : 201 });
+    const source = "StepFresh landing page";
+    const result = await createLead({
+      customerName: order.customerName,
+      email: "",
+      phone: order.phone,
+      message,
+      source,
+    }, source);
+    if (!result.duplicate) {
+      await updateLead(result.lead.id, { location: `${order.thana}, ${order.district}` }, source);
+    }
+    return Response.json({
+      ok: true,
+      duplicate: result.duplicate,
+      message: result.duplicate
+        ? "We already received this order request and will follow it up."
+        : "Your order request has been received. StepFresh will confirm it before dispatch.",
+    }, { status: result.duplicate ? 200 : 201 });
   } catch (error) {
     return apiError(error);
   }
