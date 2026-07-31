@@ -1,9 +1,11 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../db";
-import { facebookContacts, facebookWebhookEvents, ownerNotifications } from "../db/schema";
+import { facebookContacts, facebookWebhookEvents, leads, ownerNotifications } from "../db/schema";
 import {
+  businessRowToProfile,
   createLead,
   DEFAULT_BUSINESS_ID,
+  ensureBusiness,
   ensureSchema,
   recordCustomerReply,
 } from "./data";
@@ -13,11 +15,33 @@ import {
   verifyFacebookWebhook,
   type FacebookMessageEvent,
 } from "./facebook-webhook-core";
+import { inferConfiguredOrder } from "./lead-engine";
 import type { LeadPilotEnv } from "./runtime-env";
 
 type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
 };
+
+const terminalPipelineStatuses = new Set([
+  "Delivered",
+  "Cancelled",
+  "Returned",
+  "Lost",
+  "Closed Won",
+  "Closed Lost",
+]);
+
+export function shouldStartNewMessengerOrder(
+  message: string,
+  pipelineStatus: string | null | undefined,
+  services: string[],
+) {
+  return Boolean(
+    pipelineStatus
+    && terminalPipelineStatuses.has(pipelineStatus)
+    && inferConfiguredOrder(message, services),
+  );
+}
 
 export async function handleFacebookWebhook(
   request: Request,
@@ -91,25 +115,31 @@ async function processFacebookMessage(event: FacebookMessageEvent, env: LeadPilo
     .where(and(eq(facebookContacts.senderId, event.senderId), eq(facebookContacts.pageId, event.pageId)))
     .limit(1);
 
+  const linkedLead = existingContact[0]
+    ? await db
+        .select({ id: leads.id, pipelineStatus: leads.pipelineStatus })
+        .from(leads)
+        .where(and(
+          eq(leads.id, existingContact[0].leadId),
+          eq(leads.businessId, DEFAULT_BUSINESS_ID),
+        ))
+        .limit(1)
+    : [];
+
+  let startNewLead = !existingContact[0] || !linkedLead[0];
+  if (!startNewLead && linkedLead[0]) {
+    const profile = businessRowToProfile(await ensureBusiness());
+    startNewLead = shouldStartNewMessengerOrder(
+      event.text,
+      linkedLead[0].pipelineStatus,
+      profile.services,
+    );
+  }
+
   let leadId: string;
-  if (existingContact[0]) {
-    leadId = existingContact[0].leadId;
-    const recorded = await recordCustomerReply(leadId, event.text, "Facebook Messenger");
-    if (!recorded) throw new Error("Linked Messenger lead was not found.");
-    await db.update(facebookContacts).set({
-      updatedAt: event.submittedAt,
-    }).where(eq(facebookContacts.senderId, event.senderId));
-    await db.insert(ownerNotifications).values({
-      id: crypto.randomUUID(),
-      businessId: DEFAULT_BUSINESS_ID,
-      leadId,
-      type: "messenger_reply",
-      title: `New Messenger reply from ${existingContact[0].customerName}`,
-      message: event.text.slice(0, 240),
-      createdAt: event.submittedAt,
-    });
-  } else {
-    const customerName = await resolveFacebookName(event.senderId, env);
+  if (startNewLead) {
+    const customerName = existingContact[0]?.customerName
+      ?? await resolveFacebookName(event.senderId, env);
     const result = await createLead({
       customerName,
       email: null,
@@ -130,6 +160,22 @@ async function processFacebookMessage(event: FacebookMessageEvent, env: LeadPilo
     }).onConflictDoUpdate({
       target: facebookContacts.senderId,
       set: { pageId: event.pageId, leadId, customerName, updatedAt: event.submittedAt },
+    });
+  } else {
+    leadId = linkedLead[0].id;
+    const recorded = await recordCustomerReply(leadId, event.text, "Facebook Messenger");
+    if (!recorded) throw new Error("Linked Messenger lead was not found.");
+    await db.update(facebookContacts).set({
+      updatedAt: event.submittedAt,
+    }).where(eq(facebookContacts.senderId, event.senderId));
+    await db.insert(ownerNotifications).values({
+      id: crypto.randomUUID(),
+      businessId: DEFAULT_BUSINESS_ID,
+      leadId,
+      type: "messenger_reply",
+      title: `New Messenger reply from ${existingContact[0].customerName}`,
+      message: event.text.slice(0, 240),
+      createdAt: event.submittedAt,
     });
   }
 
