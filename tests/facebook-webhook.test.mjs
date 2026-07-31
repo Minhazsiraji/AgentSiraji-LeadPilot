@@ -6,6 +6,7 @@ import {
   verifyFacebookSignature,
   verifyFacebookWebhook,
 } from "../lib/facebook-webhook-core.ts";
+import { shouldStartNewMessengerOrder } from "../lib/facebook-webhook.ts";
 
 test("Facebook webhook verification returns Meta's challenge only for the configured token", () => {
   const env = { FACEBOOK_VERIFY_TOKEN: "leadpilot-secret" };
@@ -82,6 +83,22 @@ test("Messenger text events are extracted for the configured Page and echoes are
   }]);
 });
 
+test("a completed Messenger customer can place a new order without losing normal replies", () => {
+  const services = ["1 bottle — ৳450", "2 bottles — ৳800"];
+  assert.equal(
+    shouldStartNewMessengerOrder("I want to order 2 bottles", "Delivered", services),
+    true,
+  );
+  assert.equal(
+    shouldStartNewMessengerOrder("Thanks, received it", "Delivered", services),
+    false,
+  );
+  assert.equal(
+    shouldStartNewMessengerOrder("I want to order 2 bottles", "Order Confirmed", services),
+    false,
+  );
+});
+
 test("Facebook integration is wired for fast acknowledgement, persistent deduplication and human review", () => {
   const worker = readFileSync("worker/index.ts", "utf8");
   const webhook = readFileSync("lib/facebook-webhook.ts", "utf8");
@@ -96,6 +113,8 @@ test("Facebook integration is wired for fast acknowledgement, persistent dedupli
   assert.match(webhook, /facebookWebhookEvents/);
   assert.match(webhook, /onConflictDoNothing/);
   assert.match(webhook, /recordCustomerReply/);
+  assert.match(webhook, /shouldStartNewMessengerOrder/);
+  assert.match(webhook, /!linkedLead\[0\]/);
   assert.match(schema, /facebookContacts/);
   assert.match(schema, /facebookWebhookEvents/);
   assert.match(data, /New Messenger enquiry from/);
