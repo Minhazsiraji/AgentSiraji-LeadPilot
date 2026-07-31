@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   extractFacebookMessages,
+  hasExplicitMessengerOrderIntent,
   shouldStartNewMessengerOrder,
   verifyFacebookSignature,
   verifyFacebookWebhook,
@@ -83,6 +84,16 @@ test("Messenger text events are extracted for the configured Page and echoes are
   }]);
 });
 
+test("explicit repeat-order wording is detected without treating normal replies as orders", () => {
+  assert.equal(hasExplicitMessengerOrderIntent(
+    "I want to order 2 bottles of StepFresh. Name: Deployment Test. Address: Savar, Dhaka. Phone: 01400000000. Cash on delivery is okay.",
+  ), true);
+  assert.equal(hasExplicitMessengerOrderIntent("Ami 2 bottle order korte chai"), true);
+  assert.equal(hasExplicitMessengerOrderIntent("Can I order 2 bottles?"), true);
+  assert.equal(hasExplicitMessengerOrderIntent("Thanks, I received the 2 bottles."), false);
+  assert.equal(hasExplicitMessengerOrderIntent("What is the price for 2 bottles?"), false);
+});
+
 test("a completed Messenger customer can place a new order without losing normal replies", () => {
   assert.equal(shouldStartNewMessengerOrder("Delivered", true), true);
   assert.equal(shouldStartNewMessengerOrder("Delivered", false), false);
@@ -104,6 +115,7 @@ test("Facebook integration is wired for fast acknowledgement, persistent dedupli
   assert.match(webhook, /onConflictDoNothing/);
   assert.match(webhook, /recordCustomerReply/);
   assert.match(webhook, /shouldStartNewMessengerOrder/);
+  assert.match(webhook, /hasExplicitMessengerOrderIntent/);
   assert.match(webhook, /!linkedLead\[0\]/);
   assert.match(schema, /facebookContacts/);
   assert.match(schema, /facebookWebhookEvents/);
