@@ -1,7 +1,7 @@
-import { apiError } from "../../../../../lib/api-auth";
-import { createLead, updateLead } from "../../../../../lib/data";
-import { validateWebsiteLead, websiteLeadMessage, websiteLeadSource } from "../../../../../lib/website-lead";
-import { notifyWebsiteLead } from "../../../../../lib/website-lead-notification";
+import { apiError } from "../../../../lib/api-auth";
+import { createLead, updateLead } from "../../../../lib/data";
+import { validateWebsiteLead, websiteLeadMessage, websiteLeadSource } from "../../../../lib/website-lead";
+import { notifyWebsiteLead } from "../../../../lib/website-lead-notification";
 
 export async function POST(request: Request) {
   try {
