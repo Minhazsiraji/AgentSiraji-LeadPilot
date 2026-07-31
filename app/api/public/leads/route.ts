@@ -1,6 +1,7 @@
 import { apiError } from "../../../../lib/api-auth";
 import { createLead, updateLead } from "../../../../lib/data";
 import { publicOrderMessage, validatePublicOrder } from "../../../../lib/public-order";
+import { notifyWebsiteLead } from "../../../../lib/website-lead-notification";
 
 export async function POST(request: Request) {
   try {
@@ -13,6 +14,7 @@ export async function POST(request: Request) {
     const order = validation.order;
     const message = publicOrderMessage(order);
     const source = "StepFresh landing page";
+    const location = `${order.thana}, ${order.district}`;
     const result = await createLead({
       customerName: order.customerName,
       email: "",
@@ -21,7 +23,8 @@ export async function POST(request: Request) {
       source,
     }, source);
     if (!result.duplicate) {
-      await updateLead(result.lead.id, { location: `${order.thana}, ${order.district}` }, source);
+      await updateLead(result.lead.id, { location }, source);
+      await notifyWebsiteLead({ ...result.lead, location }, source, "landing_order");
     }
     return Response.json({
       ok: true,
