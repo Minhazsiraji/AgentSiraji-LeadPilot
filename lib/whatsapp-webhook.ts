@@ -139,6 +139,7 @@ async function processWhatsAppMessage(
         id: leads.id,
         customerName: leads.customerName,
         pipelineStatus: leads.pipelineStatus,
+        source: leads.source,
       })
       .from(leads)
       .where(and(
@@ -150,6 +151,7 @@ async function processWhatsAppMessage(
   const hasExplicitOrder = hasExplicitWhatsAppOrderIntent(event.text);
   const route = routeWhatsAppMessage({
     hasContact: Boolean(existingContact && linkedLead),
+    linkedSource: linkedLead?.source,
     linkedPipelineStatus: linkedLead?.pipelineStatus,
     hasExplicitOrder,
   });
