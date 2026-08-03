@@ -8,7 +8,19 @@ const explicitOrderPatterns = [
   /(?:অর্ডার|কিনতে|নিতে).*(?:চাই|চাইছি|করবো)/u,
 ];
 
+const structuredOrderFactPatterns = [
+  /(?:^|[\r\n.!?।]\s*)(?:customer\s+name|name|নাম)\s*[:=-]/iu,
+  /(?:^|[\r\n.!?।]\s*)(?:phone|mobile|contact|whatsapp|ফোন|মোবাইল)\s*(?:number|no\.?|#)?\s*[:=-]\s*\+?\d/iu,
+  /(?:^|[\r\n.!?।]\s*)(?:delivery\s+(?:address|location)|full\s+address|address|location|ঠিকানা)\s*[:=-]/iu,
+  /\b(?:cash\s+on\s+delivery|cod)\b|ক্যাশ\s+অন\s+ডেলিভারি/iu,
+];
+
 export function hasExplicitOrderIntent(message: string) {
   if (!quantityAndUnitPattern.test(message)) return false;
-  return explicitOrderPatterns.some((pattern) => pattern.test(message));
+  if (explicitOrderPatterns.some((pattern) => pattern.test(message))) return true;
+
+  const structuredFactCount = structuredOrderFactPatterns
+    .filter((pattern) => pattern.test(message))
+    .length;
+  return structuredFactCount >= 2;
 }
