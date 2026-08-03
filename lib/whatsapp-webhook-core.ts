@@ -126,10 +126,15 @@ export type WhatsAppMessageRoute = "new_lead" | "new_order" | "update_order" | "
 
 export function routeWhatsAppMessage(input: {
   hasContact: boolean;
+  linkedSource?: string | null;
   linkedPipelineStatus?: string | null;
   hasExplicitOrder: boolean;
 }): WhatsAppMessageRoute {
-  if (!input.hasContact || !input.linkedPipelineStatus) return "new_lead";
+  if (
+    !input.hasContact
+    || input.linkedSource !== "WhatsApp"
+    || !input.linkedPipelineStatus
+  ) return "new_lead";
   if (input.hasExplicitOrder && terminalPipelineStatuses.has(input.linkedPipelineStatus)) {
     return "new_order";
   }
