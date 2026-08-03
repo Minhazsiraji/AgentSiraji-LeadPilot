@@ -69,13 +69,19 @@ export async function deliverWhatsAppReply(
     error?: { code?: unknown; error_subcode?: unknown };
   } | null;
   if (!response.ok || payload?.error) {
+    const metaCode = typeof payload?.error?.code === "number"
+      ? payload.error.code
+      : null;
     console.error("LeadPilot WhatsApp delivery failed", {
-      code: typeof payload?.error?.code === "number" ? payload.error.code : null,
+      code: metaCode,
       subcode: typeof payload?.error?.error_subcode === "number"
         ? payload.error.error_subcode
         : null,
       status: response.status,
     });
+    if (metaCode === 190) {
+      throw new Error("WHATSAPP_ACCESS_TOKEN_EXPIRED");
+    }
     throw new Error("WHATSAPP_SEND_FAILED");
   }
   const messageId = payload?.messages?.[0]?.id;
