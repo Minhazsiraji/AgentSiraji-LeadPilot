@@ -50,6 +50,11 @@ export async function POST(request: Request, context: RouteContext) {
         error: "WhatsApp could not send this reply. Nothing was marked as sent; try again.",
       }, { status: 502 });
     }
+    if (error instanceof Error && error.message === "WHATSAPP_ACCESS_TOKEN_EXPIRED") {
+      return Response.json({
+        error: "Meta rejected the temporary WhatsApp access token. Open WhatsApp setup, paste the current temporary token from Meta API Setup, then try again. Nothing was marked as sent.",
+      }, { status: 409 });
+    }
     if (error instanceof Error && [
       "WHATSAPP_CONTACT_NOT_FOUND",
       "WHATSAPP_INTEGRATION_NOT_CONFIGURED",

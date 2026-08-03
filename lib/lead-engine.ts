@@ -252,7 +252,7 @@ export function extractDeliveryLocation(message: string) {
     "ডেলিভারি ঠিকানা",
     "ঠিকানা",
   ]);
-  if (address) return address;
+  if (address) return cleanDeliveryLocation(address);
 
   const thana = extractLabeledValue(message, ["thana/upazila", "thana", "upazila", "থানা/উপজেলা", "থানা", "উপজেলা"]);
   const district = extractLabeledValue(message, ["district", "জেলা"]);
@@ -260,6 +260,16 @@ export function extractDeliveryLocation(message: string) {
   if (structuredLocation) return structuredLocation;
 
   return extractAddressAfterPhone(message);
+}
+
+function cleanDeliveryLocation(value: string) {
+  const orderDetailStart = value.search(
+    /\s+(?=(?:\d+|one|two|three|four|five)\s*(?:bottles?|packs?|pieces?|pcs)\b|(?:cash\s+on\s+delivery|cod)\b|ক্যাশ\s+অন\s+ডেলিভারি)/iu,
+  );
+  const location = (orderDetailStart >= 0 ? value.slice(0, orderDetailStart) : value)
+    .replace(/[\s,;:=-]+$/, "")
+    .trim();
+  return location || null;
 }
 
 function extractAddressAfterPhone(message: string) {
@@ -436,7 +446,7 @@ function extractLabeledValue(message: string, labels: string[]) {
   for (const label of labels) {
     const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const match = message.match(new RegExp(
-      `(?:^|[\\r\\n]+|[.!?।]\\s+)${escaped}\\s*[:=-]\\s*(.+?)(?=(?:[\\r\\n]+|[.!?।]\\s+)(?:${knownLabels})\\s*[:=-]|$)`,
+      `(?:^|\\s+|[.!?।]\\s*)${escaped}\\s*[:=-]\\s*(.+?)(?=(?:\\s+|[.!?।]\\s*)(?:${knownLabels})\\s*[:=-]|$)`,
       "iu",
     ));
     const value = match?.[1]?.trim().replace(/[.!?।]+$/, "").trim();

@@ -384,6 +384,8 @@ test("WhatsApp is wired into the shared lead, approval, deletion, and live-reply
   assert.match(delivery, /leadSource === "WhatsApp"/);
   assert.match(delivery, /hasWhatsAppContact\(leadId\)/);
   assert.match(approval, /WHATSAPP_REPLY_WINDOW_CLOSED/);
+  assert.match(approval, /WHATSAPP_ACCESS_TOKEN_EXPIRED/);
+  assert.match(app, /Approve & send WhatsApp/);
   assert.match(data, /DELETE FROM whatsapp_contacts WHERE lead_id/);
   assert.match(data, /DELETE FROM whatsapp_webhook_events WHERE lead_id/);
   assert.match(app, /result\.delivery === "whatsapp"/);

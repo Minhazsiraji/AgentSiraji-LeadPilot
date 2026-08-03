@@ -5,6 +5,7 @@ import {
   draftFirstReply,
   draftFollowUpReply,
   ensureOrderPackages,
+  extractCustomerName,
   extractDeliveryLocation,
   extractMessagePhone,
   inferConfiguredOrder,
@@ -169,6 +170,12 @@ test("real multiline Messenger orders capture English and Bengali delivery addre
     extractDeliveryLocation("৫ বোতল অর্ডার\nফোন: ০১৪০৪৩৮৫১০১\nঠিকানা: সাভার, নবীনগর\nপেমেন্ট: ক্যাশ অন ডেলিভারি"),
     "সাভার, নবীনগর",
   );
+});
+
+test("one-line WhatsApp orders keep the complete address and exclude order details", () => {
+  const message = "Name: Version 37 Test Phone: 01404385101 Address: Ulail, Savar, Dhaka 3 bottles Cash on delivery.";
+  assert.equal(extractCustomerName(message), "Version 37 Test");
+  assert.equal(extractDeliveryLocation(message), "Ulail, Savar, Dhaka");
 });
 
 test("natural Messenger order captures an unlabeled address after the phone number", () => {
