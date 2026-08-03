@@ -233,39 +233,60 @@ test("WhatsApp text replies extract identity, timestamp, name, and exact message
 test("WhatsApp routing is contact-specific and distinguishes replies, revisions, and repeat orders", () => {
   assert.equal(routeWhatsAppMessage({
     hasContact: false,
+    linkedSource: null,
     linkedPipelineStatus: null,
     hasExplicitOrder: true,
   }), "new_lead");
   assert.equal(routeWhatsAppMessage({
     hasContact: true,
+    linkedSource: "WhatsApp",
     linkedPipelineStatus: "Order Confirmed",
     hasExplicitOrder: false,
   }), "reply");
   assert.equal(routeWhatsAppMessage({
     hasContact: true,
+    linkedSource: "WhatsApp",
     linkedPipelineStatus: "Order Confirmed",
     hasExplicitOrder: true,
   }), "update_order");
   assert.equal(routeWhatsAppMessage({
     hasContact: true,
+    linkedSource: "WhatsApp",
     linkedPipelineStatus: "Delivered",
     hasExplicitOrder: true,
   }), "new_order");
   assert.equal(routeWhatsAppMessage({
     hasContact: true,
+    linkedSource: "WhatsApp",
     linkedPipelineStatus: "Cancelled",
     hasExplicitOrder: true,
   }), "new_order");
   assert.equal(routeWhatsAppMessage({
     hasContact: true,
+    linkedSource: "WhatsApp",
     linkedPipelineStatus: "Returned",
     hasExplicitOrder: true,
   }), "new_order");
+  assert.equal(routeWhatsAppMessage({
+    hasContact: true,
+    linkedSource: "StepFresh landing page",
+    linkedPipelineStatus: "Order Confirmed",
+    hasExplicitOrder: true,
+  }), "new_lead");
+  assert.equal(routeWhatsAppMessage({
+    hasContact: true,
+    linkedSource: "Messenger",
+    linkedPipelineStatus: "Order Confirmed",
+    hasExplicitOrder: false,
+  }), "new_lead");
 });
 
 test("WhatsApp order intent excludes ordinary replies and price questions", () => {
   assert.equal(hasExplicitWhatsAppOrderIntent("I want 3 bottles"), true);
   assert.equal(hasExplicitWhatsAppOrderIntent("Ami 5 bottle order korte chai"), true);
+  assert.equal(hasExplicitWhatsAppOrderIntent(
+    "Name: Version 37 Test\nPhone: 01404385101\nAddress: Ulail, Savar, Dhaka\n3 bottle\nCash on delivery.",
+  ), true);
   assert.equal(hasExplicitWhatsAppOrderIntent("Thanks, I received 3 bottles"), false);
   assert.equal(hasExplicitWhatsAppOrderIntent("What is the price for 5 bottles?"), false);
 });
@@ -349,6 +370,8 @@ test("WhatsApp is wired into the shared lead, approval, deletion, and live-reply
   assert.match(webhook, /recordCustomerReply/);
   assert.match(webhook, /routeWhatsAppMessage/);
   assert.match(webhook, /hasExplicitWhatsAppOrderIntent/);
+  assert.match(webhook, /source: leads\.source/);
+  assert.match(webhook, /linkedSource: linkedLead\?\.source/);
   assert.match(webhook, /skipDuplicateCheck: true/);
   assert.doesNotMatch(webhook, /eq\(leads\.phone/);
   assert.doesNotMatch(webhook, /phoneMatches/);
