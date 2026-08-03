@@ -70,6 +70,14 @@ test("owner dashboard exposes a controlled order workflow", async () => {
   assert.match(route, /status: 409/);
 });
 
+test("owner order details show the captured timestamp separately from the requested date", () => {
+  const app = readFileSync("app/leadpilot-app.tsx", "utf8");
+  assert.match(app, /Order received \(date & time\)/);
+  assert.match(app, /formatDateTime\(lead\.createdAt, timezone\)/);
+  assert.match(app, /Customer requested date \(optional\)/);
+  assert.match(app, /timezone=\{profile\.timezone\}/);
+});
+
 test("order workflow actions update immediately and use the fast server path", () => {
   const app = readFileSync("app/leadpilot-app.tsx", "utf8");
   const data = readFileSync("lib/data.ts", "utf8");
