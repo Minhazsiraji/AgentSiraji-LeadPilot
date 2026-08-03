@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeLead, draftFirstReply, draftFollowUpReply, inferConfiguredOrder, normalizeMessage, temperatureFor } from "../lib/lead-engine.ts";
+import {
+  analyzeLead,
+  draftFirstReply,
+  draftFollowUpReply,
+  ensureOrderPackages,
+  extractDeliveryLocation,
+  extractMessagePhone,
+  inferConfiguredOrder,
+  normalizeMessage,
+  normalizePhone,
+  temperatureFor,
+} from "../lib/lead-engine.ts";
 import { parseLeadCsv } from "../lib/csv.ts";
 
 const business = {
@@ -121,6 +132,61 @@ test("StepFresh mixed-language order captures package, location, COD and high in
   assert.equal(result.temperature, "Hot");
 });
 
+test("live Messenger order extracts the StepFresh package, phone, address and value", () => {
+  const message = "LP-LIVE-0730: I want 2 bottles of StepFresh. Name: Minhaz Test. Phone: 01700000000. Address: Savar, Dhaka.";
+  const phone = extractMessagePhone(message);
+  const result = analyse(message, { email: null, phone });
+  const order = inferConfiguredOrder(message, business.services);
+
+  assert.equal(phone, "+8801700000000");
+  assert.equal(normalizePhone("01700000000"), "+8801700000000");
+  assert.equal(extractDeliveryLocation(message), "Savar, Dhaka");
+  assert.equal(result.serviceRequested, "2 bottles — ৳800");
+  assert.equal(result.location, "Savar, Dhaka");
+  assert.deepEqual(order, {
+    quantity: 2,
+    serviceRequested: "2 bottles — ৳800",
+    expectedValue: 800,
+  });
+  assert.ok(!result.missingInformation.includes("contact information"));
+  assert.ok(!result.missingInformation.includes("delivery address"));
+  assert.ok(result.missingInformation.includes("cash on delivery confirmation"));
+});
+
+test("structured order form text combines thana and district when no address label is present", () => {
+  assert.equal(
+    extractDeliveryLocation("District: Dhaka. Thana/Upazila: Savar. Payment: Cash on delivery."),
+    "Savar, Dhaka",
+  );
+});
+
+test("real multiline Messenger orders capture English and Bengali delivery addresses", () => {
+  assert.equal(
+    extractDeliveryLocation("I want 5 bottles\nPhone: 01404385101\nAddress: Savar, Nobinagar\nPayment: COD"),
+    "Savar, Nobinagar",
+  );
+  assert.equal(
+    extractDeliveryLocation("৫ বোতল অর্ডার\nফোন: ০১৪০৪৩৮৫১০১\nঠিকানা: সাভার, নবীনগর\nপেমেন্ট: ক্যাশ অন ডেলিভারি"),
+    "সাভার, নবীনগর",
+  );
+});
+
+test("natural Messenger order captures an unlabeled address after the phone number", () => {
+  const message = "Ami 5 bottle nite chai, 01404385101, Savar, Nobinagar.";
+  const phone = extractMessagePhone(message);
+  const result = analyse(message, { email: null, phone });
+
+  assert.equal(phone, "+8801404385101");
+  assert.equal(extractDeliveryLocation(message), "Savar, Nobinagar");
+  assert.equal(result.location, "Savar, Nobinagar");
+  assert.ok(!result.missingInformation.includes("delivery address"));
+});
+
+test("text after a phone is not treated as an address unless it has address structure", () => {
+  assert.equal(extractDeliveryLocation("Ami 2 bottle chai, 01700000000, COD hobe?"), null);
+  assert.equal(extractDeliveryLocation("Call me at 01700000000, waiting for the parcel."), null);
+});
+
 test("StepFresh larger quantities use configured packages without inventing a price", () => {
   const fourBottleOrder = inferConfiguredOrder("I want 4 bottles", business.services);
   assert.deepEqual(fourBottleOrder, {
@@ -140,6 +206,18 @@ test("StepFresh larger quantities use configured packages without inventing a pr
   assert.equal(analysis.serviceRequested, "4 bottles — ৳1,600");
   assert.equal(analysis.serviceFit, "supported");
   assert.ok(!analysis.missingInformation.includes("service requested"));
+});
+
+test("StepFresh package pricing survives an older generic business configuration", () => {
+  const services = ensureOrderPackages(
+    ["Website design", "Lead follow-up"],
+    ["1 bottle — ৳450", "2 bottles — ৳800"],
+  );
+  assert.deepEqual(inferConfiguredOrder("I want 2 bottles", services), {
+    quantity: 2,
+    serviceRequested: "2 bottles — ৳800",
+    expectedValue: 800,
+  });
 });
 
 test("CSV parser supports quoted commas and rejects invalid rows", () => {

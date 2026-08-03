@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const businesses = sqliteTable("businesses", {
   id: text("id").primaryKey(),
@@ -131,4 +131,52 @@ export const facebookWebhookEvents = sqliteTable("facebook_webhook_events", {
   status: text("status").notNull().default("processing"),
   receivedAt: text("received_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   processedAt: text("processed_at"),
+});
+
+export const facebookIntegrations = sqliteTable("facebook_integrations", {
+  id: text("id").primaryKey(),
+  pageId: text("page_id").notNull(),
+  pageName: text("page_name").notNull(),
+  appSecretEncrypted: text("app_secret_encrypted").notNull(),
+  pageAccessTokenEncrypted: text("page_access_token_encrypted").notNull(),
+  connectedBy: text("connected_by").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const whatsappContacts = sqliteTable("whatsapp_contacts", {
+  waId: text("wa_id").notNull(),
+  phoneNumberId: text("phone_number_id").notNull(),
+  leadId: text("lead_id").notNull(),
+  customerName: text("customer_name").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  primaryKey({ columns: [table.waId, table.phoneNumberId] }),
+]);
+
+export const whatsappWebhookEvents = sqliteTable("whatsapp_webhook_events", {
+  eventId: text("event_id").primaryKey(),
+  waId: text("wa_id").notNull(),
+  phoneNumberId: text("phone_number_id").notNull(),
+  leadId: text("lead_id"),
+  status: text("status").notNull().default("processing"),
+  receivedAt: text("received_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  processedAt: text("processed_at"),
+});
+
+export const whatsappIntegrations = sqliteTable("whatsapp_integrations", {
+  id: text("id").primaryKey(),
+  wabaId: text("waba_id").notNull(),
+  phoneNumberId: text("phone_number_id").notNull(),
+  displayPhoneNumber: text("display_phone_number").notNull(),
+  verifiedName: text("verified_name").notNull(),
+  connectionMode: text("connection_mode").notNull().default("coexistence"),
+  tokenExpiresAt: text("token_expires_at"),
+  appSecretEncrypted: text("app_secret_encrypted").notNull(),
+  accessTokenEncrypted: text("access_token_encrypted").notNull(),
+  verifyTokenEncrypted: text("verify_token_encrypted"),
+  connectedBy: text("connected_by").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

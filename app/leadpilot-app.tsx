@@ -6,6 +6,7 @@ import type { ChatGPTUser } from "./chatgpt-auth";
 import { nextOrderStatuses, orderStatusAction } from "../lib/order-workflow";
 import { customerOrderMessageTitle, isCustomerOrderDraft, whatsappMessageUrl } from "../lib/order-confirmation";
 import type { BusinessProfile, PipelineStatus, ScoreBreakdown } from "../lib/types";
+import { buildLeadPilotAnalytics, type LeadPilotAnalytics } from "../lib/analytics";
 
 type LeadTemperature = "Hot" | "Warm" | "Cold";
 type LeadStatus = "New" | "Contacted" | "Qualified" | "Offer Sent" | "Order Confirmed" | "Shipped" | "Delivered" | "Cancelled" | "Returned" | "Lost";
@@ -28,6 +29,9 @@ type PreviewLead = {
   doNotContact: boolean;
   possibleSpam: boolean;
   createdAt: string;
+  updatedAt?: string;
+  lastCustomerActivityAt?: string | null;
+  replyChannel?: "facebook" | "whatsapp" | null;
   analysis?: AnalysisRow | null;
   draft?: DraftRow | null;
   followUps?: FollowUpRow[];
@@ -52,6 +56,7 @@ type WorkspacePayload = {
   business: { profile: BusinessProfile };
   leads: PreviewLead[];
   notifications: OwnerNotification[];
+  analytics: LeadPilotAnalytics;
   metrics: {
     newLeads: number;
     hotLeads: number;
@@ -101,6 +106,21 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
   }, [refreshWorkspace]);
 
   useEffect(() => {
+    if (!user) return;
+    const refreshVisibleWorkspace = () => {
+      if (document.visibilityState === "visible") void refreshWorkspace();
+    };
+    const interval = window.setInterval(refreshVisibleWorkspace, 10_000);
+    window.addEventListener("focus", refreshVisibleWorkspace);
+    document.addEventListener("visibilitychange", refreshVisibleWorkspace);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshVisibleWorkspace);
+      document.removeEventListener("visibilitychange", refreshVisibleWorkspace);
+    };
+  }, [refreshWorkspace, user]);
+
+  useEffect(() => {
     const initialTimer = window.setTimeout(() => setRelativeTimeNow(Date.now()), 0);
     const interval = window.setInterval(() => setRelativeTimeNow(Date.now()), 60_000);
     return () => {
@@ -108,6 +128,15 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
       window.clearInterval(interval);
     };
   }, []);
+
+  useEffect(() => {
+    if (!notificationsOpen) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setNotificationsOpen(false);
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [notificationsOpen]);
 
   const leads = workspace?.leads ?? previewLeads;
   const notifications = workspace?.notifications ?? [];
@@ -134,6 +163,7 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
   const currency = profile?.currency ?? "BDT";
   const offeringLabel = profile?.offeringLabel ?? "Product / package";
   const pipelineStages = profile?.pipelineStages ?? ["New", "Contacted", "Order Confirmed", "Shipped", "Delivered", "Cancelled", "Returned"];
+  const analytics = workspace?.analytics ?? buildLeadPilotAnalytics(previewLeads, [], initialNow);
 
   function requireWorkspace(action: string, callback?: () => void) {
     if (isDemo) {
@@ -149,10 +179,6 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
     if (item === "Overview") setActiveTab("Needs attention");
     if (item === "Leads") setActiveTab("All leads");
     if (item === "Follow-ups") setActiveTab("Needs attention");
-    if (item === "Analytics") {
-      setNoticeNeedsSignIn(false);
-      setNotice(`Conversion is ${metrics.conversionRate.toFixed(1)}% across legitimate leads; active pipeline value is ${formatMoney(metrics.expectedPipelineValue, currency)}.`);
-    }
     if (item === "Settings") requireWorkspace("Business settings", () => setModal("settings"));
   }
 
@@ -206,14 +232,24 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
         <header className="utility-bar">
           <div><span className="presence-dot" aria-hidden="true" /><span>{loading ? "Preparing your workspace…" : isDemo ? "Live product demo" : `Signed in as ${displayName}`}</span></div>
           <div className="utility-actions">
-            {!isDemo ? <div className="notification-wrap"><button aria-expanded={notificationsOpen} aria-label={`${unreadNotifications.length} unread lead notifications`} className="notification-button" onClick={() => setNotificationsOpen((open) => !open)} type="button">🔔{unreadNotifications.length ? <span>{unreadNotifications.length}</span> : null}</button>{notificationsOpen ? <div className="notification-panel"><div className="notification-heading"><strong>Lead notifications</strong>{unreadNotifications.length ? <button onClick={() => void markAllNotificationsRead()} type="button">Mark all read</button> : null}</div>{notifications.length ? notifications.slice(0, 10).map((item) => <button className={item.readAt ? "notification-item" : "notification-item is-unread"} key={item.id} onClick={() => void openNotification(item)} type="button"><strong>{item.title}</strong><span>{item.message}</span><small>{relativeTime(item.createdAt, relativeTimeNow)}</small></button>) : <p className="notification-empty">New orders and Messenger enquiries will appear here.</p>}</div> : null}</div> : null}
+            {!isDemo ? <div className="notification-wrap"><button aria-expanded={notificationsOpen} aria-label={`${unreadNotifications.length} unread lead notifications`} className="notification-button" onClick={() => setNotificationsOpen((open) => !open)} type="button">🔔{unreadNotifications.length ? <span>{unreadNotifications.length}</span> : null}</button>{notificationsOpen ? <div className="notification-panel"><div className="notification-heading"><strong>Lead notifications</strong>{unreadNotifications.length ? <button onClick={() => void markAllNotificationsRead()} type="button">Mark all read</button> : null}</div>{notifications.length ? notifications.slice(0, 10).map((item) => <button className={item.readAt ? "notification-item" : "notification-item is-unread"} key={item.id} onClick={() => void openNotification(item)} type="button"><strong>{item.title}</strong><span>{item.message}</span><small>{relativeTime(item.createdAt, relativeTimeNow)}</small></button>) : <p className="notification-empty">New website, Messenger, and WhatsApp enquiries will appear here.</p>}</div> : null}</div> : null}
+            {!isDemo ? <Link className="text-link" href="/owner/facebook">Facebook setup</Link> : null}
+            {!isDemo ? <Link className="text-link" href="/owner/whatsapp">WhatsApp setup</Link> : null}
             {isDemo ? <a className="text-link" href="/owner">Owner sign in</a> : <a className="text-link" href="/signout-with-chatgpt?return_to=/">Sign out</a>}
           </div>
         </header>
 
-        <div className="page-content">
+        <div className={activeNav === "Analytics" ? "page-content analytics-page-content" : "page-content"}>
+          {activeNav === "Analytics" ? (
+            <AnalyticsDashboard
+              analytics={analytics}
+              currency={currency}
+              timezone={profile?.timezone ?? "Asia/Dhaka"}
+              onOpenLead={(leadId) => requireWorkspace("Open reorder customer", () => setSelectedLeadId(leadId))}
+            />
+          ) : <>
           <section className="hero" aria-labelledby="dashboard-title">
-            <div><p className="eyebrow">StepFresh · @stepfresh.bd</p><h1 id="dashboard-title">Every enquiry. Followed through.</h1><p className="hero-copy">Capture Facebook leads, identify ready buyers, prepare helpful replies, and track every order to delivery.</p></div>
+            <div><p className="eyebrow">StepFresh · @stepfresh.bd</p><h1 id="dashboard-title">Every enquiry. Followed through.</h1><p className="hero-copy">Capture website, Messenger, and WhatsApp leads, identify ready buyers, prepare helpful replies, and track every order to delivery.</p></div>
             <div className="hero-actions">
               <button className="button button-primary" onClick={() => requireWorkspace("Add lead", () => setModal("add"))} type="button"><span aria-hidden="true">＋</span> Add lead</button>
               <button className="button button-secondary" onClick={() => requireWorkspace("CSV import", () => setModal("import"))} type="button"><span aria-hidden="true">↑</span> Import CSV</button>
@@ -246,7 +282,7 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
                       <td><strong>{lead.serviceRequested || "Not identified"}</strong><small>{lead.source}</small></td>
                       <td><span className={`score score-${lead.temperature.toLowerCase()}`}>{lead.leadScore}</span><small>{lead.temperature}</small></td>
                       <td><span className={`status status-${lead.pipelineStatus.toLowerCase().replace(" ", "-")}`}>{lead.pipelineStatus}</span></td>
-                      <td><strong>{lead.attentionState}</strong><small className={attention ? "urgent-copy" : ""}>{relativeTime(lead.createdAt, relativeTimeNow)}</small></td>
+                      <td><strong>{lead.attentionState}</strong><small className={attention ? "urgent-copy" : ""}>{relativeTime(lead.lastCustomerActivityAt ?? lead.updatedAt ?? lead.createdAt, relativeTimeNow)}</small></td>
                       <td><strong>{formatMoney(lead.expectedValue, currency)}</strong></td>
                       <td><button className="row-action" onClick={() => requireWorkspace(`Open ${lead.customerName}`, () => setSelectedLeadId(lead.id))} aria-label={`Open ${lead.customerName}`} type="button">•••</button></td>
                     </tr>;
@@ -257,13 +293,14 @@ export default function LeadPilotApp({ initialNow, user }: { initialNow: string;
             </div>
           </section>
           <footer className="product-footer"><span>AgentSiraji LeadPilot</span><span>Capture · Understand · Follow through</span></footer>
+          </>}
         </div>
       </section>
 
       {modal === "add" ? <AddLeadModal onClose={() => setModal(null)} onComplete={async (message) => { setModal(null); setNotice(message); await refreshWorkspace(); }} /> : null}
       {modal === "import" ? <ImportModal onClose={() => setModal(null)} onComplete={async (message) => { setModal(null); setNotice(message); await refreshWorkspace(); }} /> : null}
       {modal === "settings" && workspace ? <SettingsModal profile={workspace.business.profile} onClose={() => setModal(null)} onComplete={async (message) => { setModal(null); setNotice(message); await refreshWorkspace(); }} /> : null}
-      {selectedLead ? <LeadDrawer key={`${selectedLead.id}:${selectedLead.draft?.id ?? "none"}`} lead={selectedLead} currency={currency} offeringLabel={offeringLabel} onClose={() => setSelectedLeadId(null)} onStatusChange={(status) => setWorkspace((current) => current ? {
+      {selectedLead ? <LeadDrawer key={`${selectedLead.id}:${selectedLead.draft?.id ?? "none"}`} lead={selectedLead} currency={currency} offeringLabel={offeringLabel} timezone={profile.timezone} onClose={() => setSelectedLeadId(null)} onStatusChange={(status) => setWorkspace((current) => current ? {
         ...current,
         leads: current.leads.map((item) => item.id === selectedLead.id ? {
           ...item,
@@ -320,11 +357,11 @@ function SettingsModal({ profile, onClose, onComplete }: { profile: BusinessProf
   return <Modal title="Business settings" eyebrow="AI guardrails" onClose={onClose} wide><form className="modal-form" onSubmit={submit}><div className="form-grid"><Field defaultValue={profile.name} label="Business name" name="name" required /><Field defaultValue={profile.currency} label="Currency" maxLength={3} name="currency" required /></div><label>Business description<textarea defaultValue={profile.description} name="description" rows={3} /></label><div className="form-grid"><Field defaultValue={profile.timezone} label="Timezone" name="timezone" /><Field defaultValue={profile.businessHours} label="Opening hours" name="businessHours" /></div><Field defaultValue={profile.responseTone} label="Response tone" name="responseTone" /><label>Services offered, comma separated<textarea defaultValue={profile.services.join(", ")} name="services" rows={3} /></label><label>Services not offered, comma separated<textarea defaultValue={profile.excludedServices.join(", ")} name="excludedServices" rows={2} /></label><Field defaultValue={profile.serviceAreas.join(", ")} label="Service areas, comma separated" name="serviceAreas" /><Field defaultValue={profile.followUpDays.join(", ")} label="Follow-up days" name="followUpDays" /><label>Prohibited claims, one per line<textarea defaultValue={profile.prohibitedClaims.join("\n")} name="prohibitedClaims" rows={3} /></label><ModalActions busy={busy} error={error} onClose={onClose} submit="Save guardrails" /></form></Modal>;
 }
 
-function LeadDrawer({ lead, currency, offeringLabel, onClose, onChanged, onStatusChange }: { lead: PreviewLead; currency: string; offeringLabel: string; onClose: () => void; onChanged: (message: string) => void; onStatusChange: (status: PipelineStatus) => void }) {
+function LeadDrawer({ lead, currency, offeringLabel, timezone, onClose, onChanged, onStatusChange }: { lead: PreviewLead; currency: string; offeringLabel: string; timezone: string; onClose: () => void; onChanged: (message: string) => void; onStatusChange: (status: PipelineStatus) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [draft, setDraft] = useState(lead.draft?.message ?? "");
-  const [reply, setReply] = useState("");
+  const [manualReply, setManualReply] = useState("");
   const analysis = parseJson<Record<string, unknown>>(lead.analysis?.extractedInformationJson, {});
   const missing = parseJson<string[]>(lead.analysis?.missingInformationJson, []);
   const score = parseJson<ScoreBreakdown>(lead.analysis?.scoreBreakdownJson, { serviceFit: 0, purchaseIntent: 0, urgency: 0, completeness: 0, engagement: 0, total: lead.leadScore });
@@ -332,9 +369,44 @@ function LeadDrawer({ lead, currency, offeringLabel, onClose, onChanged, onStatu
   const isCustomerOrderMessage = isCustomerOrderDraft(lead.draft?.draftType ?? "");
   const customerMessageTitle = customerOrderMessageTitle(lead.draft?.draftType ?? "");
   const whatsappUrl = isCustomerOrderMessage ? whatsappMessageUrl(lead.phone, draft) : null;
-  async function action(url: string, init: RequestInit, success: string) {
+  const automaticChannel = lead.replyChannel
+    ?? (lead.source === "Facebook Messenger"
+      ? "facebook"
+      : lead.source === "WhatsApp"
+        ? "whatsapp"
+        : null);
+  const latestCustomerReply = latestCustomerReplyFromEvents(lead.events);
+  useEffect(() => {
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+  async function action(
+    url: string,
+    init: RequestInit,
+    success: string | ((result: Record<string, unknown>) => string),
+  ) {
     setBusy(true); setError("");
-    try { await apiJson(url, init); onChanged(success); setBusy(false); } catch (caught) { setError(errorMessage(caught)); setBusy(false); }
+    try {
+      const result = await apiJson(url, init);
+      onChanged(typeof success === "function" ? success(result) : success);
+      setBusy(false);
+      return true;
+    } catch (caught) {
+      setError(errorMessage(caught));
+      setBusy(false);
+      return false;
+    }
+  }
+  async function recordManualReply() {
+    const recorded = await action(
+      `/api/leads/${lead.id}/reply`,
+      { method: "POST", body: JSON.stringify({ message: manualReply }) },
+      "Customer reply recorded; pending follow-ups were cancelled.",
+    );
+    if (recorded) setManualReply("");
   }
   async function transitionStatus(status: PipelineStatus) {
     const previousStatus = lead.pipelineStatus as PipelineStatus;
@@ -362,20 +434,44 @@ function LeadDrawer({ lead, currency, offeringLabel, onClose, onChanged, onStatu
     <section className="detail-section"><p className="detail-label">Original enquiry</p><blockquote>{lead.originalMessage}</blockquote></section>
     <section aria-busy={busy} className="detail-section order-workflow"><div className="detail-section-heading"><div><p className="detail-label">Order workflow</p><h3>{lead.pipelineStatus}</h3></div><span className={`status status-${lead.pipelineStatus.toLowerCase().replace(" ", "-")}`}>{busy ? "Saving…" : nextStatuses.length ? "Action needed" : "Complete"}</span></div><div className="workflow-track">{["New", "Order Confirmed", "Shipped", "Delivered"].map((status) => <span className={status === lead.pipelineStatus ? "is-current" : ""} key={status}>{status}</span>)}</div>{nextStatuses.length ? <div className="inline-actions">{nextStatuses.map((status) => <button className={status === "Cancelled" ? "button button-quiet workflow-cancel" : "button button-primary"} disabled={busy} key={status} onClick={() => void transitionStatus(status)} type="button">{orderStatusAction(status)}</button>)}</div> : <p className="workflow-complete">{busy ? "Saving this status…" : "No further action is required for this order."}</p>}</section>
     <section className="detail-section"><div className="detail-section-heading"><div><p className="detail-label">LeadPilot analysis</p><h3>Transparent score</h3></div><span className={`score score-${lead.temperature.toLowerCase()}`}>{score.total}</span></div><div className="score-grid"><ScorePart label="Service fit" value={score.serviceFit} max={30} /><ScorePart label="Purchase intent" value={score.purchaseIntent} max={25} /><ScorePart label="Urgency" value={score.urgency} max={20} /><ScorePart label="Completeness" value={score.completeness} max={15} /><ScorePart label="Engagement" value={score.engagement} max={10} /></div><div className="analysis-meta"><span>Confidence: <strong>{lead.analysis?.confidence ?? "—"}</strong></span><span>Engine: <strong>{lead.analysis?.modelUsed ?? "—"}</strong></span></div>{missing.length ? <div className="missing-box"><strong>Missing information</strong><span>{missing.join(" · ")}</span></div> : null}<p className="recommendation">{lead.analysis?.recommendedNextAction || String(analysis.recommendedNextAction || "Review the lead.")}</p></section>
-    <section className="detail-section"><p className="detail-label">Editable facts</p><form className="modal-form compact" onSubmit={save}><div className="form-grid"><Field defaultValue={lead.customerName} label="Customer name" name="customerName" required /><Field defaultValue={lead.email ?? ""} label="Email" name="email" type="email" /></div><div className="form-grid"><Field defaultValue={lead.phone ?? ""} label="Phone" name="phone" /><Field defaultValue={lead.serviceRequested ?? ""} label={offeringLabel} name="serviceRequested" /></div><div className="form-grid"><Field defaultValue={lead.location ?? ""} label="Delivery / service location" name="location" /><Field defaultValue={lead.preferredDate ?? ""} label="Needed date" name="preferredDate" type="date" /></div><Field defaultValue={String(lead.expectedValue)} label={`Expected value (${currency})`} min="0" name="expectedValue" type="number" /><input name="pipelineStatus" type="hidden" value={lead.pipelineStatus} /><label className="check-label"><input defaultChecked={lead.doNotContact} name="doNotContact" type="checkbox" /> Do not contact this customer</label><button className="button button-secondary" disabled={busy} type="submit">Save corrections</button></form></section>
-    {lead.draft ? <section className={isCustomerOrderMessage ? "detail-section confirmation-section" : "detail-section"}><div className="detail-section-heading"><div><p className="detail-label">{isCustomerOrderMessage ? "Customer message" : "Reply draft"}</p><h3>{isCustomerOrderMessage ? customerMessageTitle : lead.draft.approvalStatus === "approved" ? "Approved response" : "Owner approval required"}</h3></div><span className={`approval-pill approval-${lead.draft.approvalStatus}`}>{lead.draft.approvalStatus === "approved" ? "sent" : "ready to send"}</span></div>{isCustomerOrderMessage ? <p className="confirmation-note">Prepared automatically from verified order facts. Review it before sending.</p> : null}<textarea className="draft-editor" onChange={(event) => setDraft(event.target.value)} rows={isCustomerOrderMessage ? 13 : 10} value={draft} /><div className="inline-actions">{isCustomerOrderMessage && whatsappUrl && lead.draft.approvalStatus !== "approved" ? <a className="button button-whatsapp" href={whatsappUrl} rel="noreferrer" target="_blank">Open WhatsApp</a> : null}<button className="button button-quiet" onClick={() => void navigator.clipboard.writeText(draft)} type="button">{isCustomerOrderMessage ? "Copy message" : "Copy reply"}</button><button className="button button-primary" disabled={busy || lead.draft.approvalStatus === "approved" || lead.doNotContact || lead.possibleSpam} onClick={() => void action(`/api/leads/${lead.id}/approve`, { method: "POST", body: JSON.stringify({ message: draft }) }, isCustomerOrderMessage ? `${customerMessageTitle} recorded as sent.` : "Reply approved, contact recorded, and follow-up activated.")} type="button">{isCustomerOrderMessage ? "Mark as sent" : "Approve & record contact"}</button></div></section> : <section className="detail-section warning-section"><strong>No reply was created.</strong><span>This lead is spam, Do Not Contact, or needs manual review.</span></section>}
-    <section className="detail-section"><p className="detail-label">Customer replied?</p><textarea onChange={(event) => setReply(event.target.value)} placeholder="Paste the customer’s latest reply. Pending follow-ups will stop immediately." rows={4} value={reply} /><button className="button button-secondary" disabled={busy || !reply.trim()} onClick={() => void action(`/api/leads/${lead.id}/reply`, { method: "POST", body: JSON.stringify({ message: reply }) }, "Customer reply recorded; pending follow-ups were cancelled.")} type="button">Record reply</button></section>
-    <section className="detail-section"><div className="detail-section-heading"><div><p className="detail-label">Follow-up timeline</p><h3>{lead.followUps?.length ?? 0} task{lead.followUps?.length === 1 ? "" : "s"}</h3></div></div><div className="timeline">{lead.followUps?.map((task) => <div className="timeline-item" key={task.id}><span className={`timeline-dot timeline-${task.status}`} /><div><strong>Step {task.sequenceStep} · {task.status.replaceAll("_", " ")}</strong><small>{formatDateTime(task.dueAt)}{task.cancelledReason ? ` · ${task.cancelledReason}` : ""}</small></div>{["pending", "waiting_for_approval", "waiting_for_initial_reply"].includes(task.status) ? <div className="timeline-actions">{task.status === "pending" ? <button disabled={busy} onClick={() => void action(`/api/follow-ups/${task.id}/draft`, { method: "POST", body: "{}" }, "Follow-up draft prepared for owner approval.")} type="button">Prepare draft</button> : null}<button disabled={busy} onClick={() => void action(`/api/follow-ups/${task.id}`, { method: "PATCH", body: JSON.stringify({ status: "completed" }) }, "Follow-up completed.")} type="button">Complete</button><button disabled={busy} onClick={() => void action(`/api/follow-ups/${task.id}`, { method: "PATCH", body: JSON.stringify({ status: "cancelled" }) }, "Follow-up cancelled.")} type="button">Cancel</button></div> : null}</div>)}</div></section>
-    <section className="detail-section"><p className="detail-label">Activity history</p><div className="timeline">{lead.events?.map((event) => <div className="timeline-item" key={event.id}><span className="timeline-dot" /><div><strong>{event.eventType.replaceAll("_", " ")}</strong><small>{event.createdBy} · {formatDateTime(event.createdAt)}</small></div></div>)}</div></section>
+    <section className="detail-section"><p className="detail-label">Editable facts</p><form className="modal-form compact" onSubmit={save}><div className="form-grid"><Field defaultValue={lead.customerName} label="Customer name" name="customerName" required /><Field defaultValue={lead.email ?? ""} label="Email" name="email" type="email" /></div><div className="form-grid"><Field defaultValue={lead.phone ?? ""} label="Phone" name="phone" /><Field defaultValue={lead.serviceRequested ?? ""} label={offeringLabel} name="serviceRequested" /></div><div className="form-grid"><Field defaultValue={lead.location ?? ""} label="Delivery / service location" name="location" /><Field defaultValue={formatDateTime(lead.createdAt, timezone)} label="Order received (date & time)" name="receivedAt" readOnly /></div><div className="form-grid"><Field defaultValue={lead.preferredDate ?? ""} label="Customer requested date (optional)" name="preferredDate" type="date" /><Field defaultValue={String(lead.expectedValue)} label={`Expected value (${currency})`} min="0" name="expectedValue" type="number" /></div><input name="pipelineStatus" type="hidden" value={lead.pipelineStatus} /><label className="check-label"><input defaultChecked={lead.doNotContact} name="doNotContact" type="checkbox" /> Do not contact this customer</label><button className="button button-secondary" disabled={busy} type="submit">Save corrections</button></form></section>
+    {lead.draft ? <section className={isCustomerOrderMessage ? "detail-section confirmation-section" : "detail-section"}><div className="detail-section-heading"><div><p className="detail-label">{isCustomerOrderMessage ? "Customer message" : "Reply draft"}</p><h3>{isCustomerOrderMessage ? customerMessageTitle : lead.draft.approvalStatus === "approved" ? "Approved response" : "Owner approval required"}</h3></div><span className={`approval-pill approval-${lead.draft.approvalStatus}`}>{lead.draft.approvalStatus === "approved" ? automaticChannel ? "sent" : "recorded" : automaticChannel ? "ready to send" : "ready to record"}</span></div>{isCustomerOrderMessage ? <p className="confirmation-note">Prepared automatically from verified order facts. Review it before sending.</p> : null}<textarea className="draft-editor" onChange={(event) => setDraft(event.target.value)} rows={isCustomerOrderMessage ? 13 : 10} value={draft} /><div className="inline-actions">{isCustomerOrderMessage && whatsappUrl && !automaticChannel && lead.draft.approvalStatus !== "approved" ? <a className="button button-whatsapp" href={whatsappUrl} rel="noreferrer" target="_blank">Open WhatsApp</a> : null}<button className="button button-quiet" onClick={() => void navigator.clipboard.writeText(draft)} type="button">{isCustomerOrderMessage ? "Copy message" : "Copy reply"}</button><button className="button button-primary" disabled={busy || lead.draft.approvalStatus === "approved" || lead.doNotContact || lead.possibleSpam} onClick={() => void action(`/api/leads/${lead.id}/approve`, { method: "POST", body: JSON.stringify({ message: draft }) }, (result) => result.delivery === "facebook" ? "Reply sent in Messenger and follow-up activated." : result.delivery === "whatsapp" ? "Reply sent in WhatsApp and follow-up activated." : isCustomerOrderMessage ? `${customerMessageTitle} recorded as sent.` : "Reply approved, contact recorded, and follow-up activated.")} type="button">{automaticChannel ? "Approve & send" : isCustomerOrderMessage ? "Mark as sent" : "Approve & record contact"}</button></div></section> : <section className="detail-section warning-section"><strong>No reply was created.</strong><span>This lead is spam, Do Not Contact, or needs manual review.</span></section>}
+    <section className="detail-section customer-reply-section">
+      <div className="detail-section-heading">
+        <div><p className="detail-label">Customer reply</p><h3>{latestCustomerReply ? "Latest reply captured" : "Waiting for customer"}</h3></div>
+        {latestCustomerReply ? <span className="approval-pill approval-approved">{latestCustomerReply.automatic ? "Captured automatically" : "Recorded manually"}</span> : null}
+      </div>
+      {latestCustomerReply ? <>
+        <textarea aria-label="Latest customer reply" className="captured-reply" readOnly rows={4} value={latestCustomerReply.message} />
+        <p className="captured-reply-meta">{latestCustomerReply.channel} · {formatDateTime(latestCustomerReply.receivedAt, timezone)}</p>
+      </> : <p className="empty-reply-note">New Messenger or WhatsApp replies will appear here automatically and pending follow-ups will stop.</p>}
+      <details className="manual-reply-entry">
+        <summary>Record a reply manually</summary>
+        <textarea onChange={(event) => setManualReply(event.target.value)} placeholder="Use this only if the reply arrived outside a connected channel." rows={4} value={manualReply} />
+        <button className="button button-secondary" disabled={busy || !manualReply.trim()} onClick={() => void recordManualReply()} type="button">Record reply</button>
+      </details>
+    </section>
+    <section className="detail-section"><div className="detail-section-heading"><div><p className="detail-label">Follow-up timeline</p><h3>{lead.followUps?.length ?? 0} task{lead.followUps?.length === 1 ? "" : "s"}</h3></div></div><div className="timeline">{lead.followUps?.map((task) => <div className="timeline-item" key={task.id}><span className={`timeline-dot timeline-${task.status}`} /><div><strong>Step {task.sequenceStep} · {task.status.replaceAll("_", " ")}</strong><small>{formatDateTime(task.dueAt, timezone)}{task.cancelledReason ? ` · ${task.cancelledReason}` : ""}</small></div>{["pending", "waiting_for_approval", "waiting_for_initial_reply"].includes(task.status) ? <div className="timeline-actions">{task.status === "pending" ? <button disabled={busy} onClick={() => void action(`/api/follow-ups/${task.id}/draft`, { method: "POST", body: "{}" }, "Follow-up draft prepared for owner approval.")} type="button">Prepare draft</button> : null}<button disabled={busy} onClick={() => void action(`/api/follow-ups/${task.id}`, { method: "PATCH", body: JSON.stringify({ status: "completed" }) }, "Follow-up completed.")} type="button">Complete</button><button disabled={busy} onClick={() => void action(`/api/follow-ups/${task.id}`, { method: "PATCH", body: JSON.stringify({ status: "cancelled" }) }, "Follow-up cancelled.")} type="button">Cancel</button></div> : null}</div>)}</div></section>
+    <section className="detail-section"><p className="detail-label">Activity history</p><div className="timeline">{lead.events?.map((event) => {
+      const customerReply = customerReplyFromEvent(event);
+      return <div className="timeline-item" key={event.id}><span className="timeline-dot" /><div><strong>{event.eventType.replaceAll("_", " ")}</strong>{customerReply ? <blockquote className="activity-message">{customerReply.message}</blockquote> : null}<small>{event.createdBy} · {formatDateTime(customerReply?.receivedAt ?? event.createdAt, timezone)}</small></div></div>;
+    })}</div></section>
     <section className="danger-zone"><div><strong>Delete customer data</strong><span>Removes the lead, analysis, drafts, tasks, and history.</span></div><button disabled={busy} onClick={() => void remove()} type="button">Delete permanently</button></section>
   </div></aside></div>;
 }
 
 function Modal({ title, eyebrow, onClose, children, wide = false }: { title: string; eyebrow: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+  useEffect(() => {
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section aria-labelledby="modal-title" aria-modal="true" className={wide ? "modal-card modal-wide" : "modal-card"} role="dialog"><header><div><p className="eyebrow">{eyebrow}</p><h2 id="modal-title">{title}</h2></div><button aria-label="Close dialog" onClick={onClose} type="button">×</button></header>{children}</section></div>;
 }
 
-function Field(props: { label: string; name: string; type?: string; defaultValue?: string; required?: boolean; min?: string; step?: string; maxLength?: number }) {
+function Field(props: { label: string; name: string; type?: string; defaultValue?: string; required?: boolean; min?: string; step?: string; maxLength?: number; readOnly?: boolean }) {
   const { label, ...input } = props; return <label>{label}<input {...input} /></label>;
 }
 
@@ -385,6 +481,95 @@ function ModalActions({ busy, error, onClose, submit }: { busy: boolean; error: 
 
 function MetricCard({ label, value, detail, symbol, className = "" }: { label: string; value: string; detail: string; symbol: string; className?: string }) {
   return <article className={`metric-card ${className}`}><span className="metric-symbol" aria-hidden="true">{symbol}</span><span><small>{label}</small><strong>{value}</strong><em>{detail}</em></span></article>;
+}
+
+function AnalyticsDashboard({ analytics, currency, timezone, onOpenLead }: { analytics: LeadPilotAnalytics; currency: string; timezone: string; onOpenLead: (leadId: string) => void }) {
+  const { summary } = analytics;
+  const maxWeeklyLeads = Math.max(1, ...analytics.weeklyTrend.map((item) => item.leads));
+  const maxWeeklyValue = Math.max(1, ...analytics.weeklyTrend.map((item) => item.deliveredValue));
+  const maxFunnel = Math.max(1, ...analytics.funnel.map((item) => item.value));
+  const totalTemperatures = Math.max(1, analytics.temperatures.reduce((sum, item) => sum + item.value, 0));
+  return <>
+    <section className="analytics-hero" aria-labelledby="analytics-title">
+      <div><p className="eyebrow">Sales intelligence · All recorded data</p><h1 id="analytics-title">See what sells. Know who to call next.</h1><p>Every number is calculated from LeadPilot records. Gross sales, returns, and net sales are reconciled separately; pipeline value stays separate until delivery.</p></div>
+      <div className="analytics-rule"><span>Reorder rule</span><strong>{analytics.reorderCycleDays} days</strong><small>Delivered customers become reorder opportunities after this default StepFresh usage cycle.</small></div>
+    </section>
+
+    <section className="analytics-kpis" aria-label="Complete sales summary">
+      <AnalyticsKpi label="Total captured" value={String(summary.totalCaptured)} detail={`${summary.legitimateLeads} legitimate`} tone="navy" />
+      <AnalyticsKpi label="Hot leads" value={String(summary.hotLeads)} detail="High buying intent" tone="hot" />
+      <AnalyticsKpi label="Warm leads" value={String(summary.warmLeads)} detail="Needs nurturing" tone="warm" />
+      <AnalyticsKpi label="Converted" value={String(summary.convertedOrders)} detail={`${summary.conversionRate.toFixed(1)}% of legitimate leads`} tone="mint" />
+      <AnalyticsKpi label="Confirmed now" value={String(summary.confirmedOrders)} detail={`${formatMoney(summary.activeOrderValue, currency)} active order value`} tone="navy" />
+      <AnalyticsKpi label="In transit" value={String(summary.shippedOrders)} detail="Shipped, not delivered yet" tone="blue" />
+      <AnalyticsKpi label="Delivered" value={String(summary.deliveredOrders)} detail={`${summary.deliveryRate.toFixed(1)}% of converted orders`} tone="mint" />
+      <AnalyticsKpi label="Gross sales" value={formatMoney(summary.grossSalesValue, currency)} detail="Completed deliveries before returns" tone="navy" />
+      <AnalyticsKpi label="Returned value" value={formatMoney(summary.returnedValue, currency)} detail={`${summary.returnedOrders} returned · ${summary.returnRate.toFixed(1)}% return rate`} tone="danger" />
+      <AnalyticsKpi label="Net sales after returns" value={formatMoney(summary.netSalesValue, currency)} detail={`Net AOV ${formatMoney(summary.averageOrderValue, currency)}`} tone="mint" />
+      <AnalyticsKpi label="Cancelled" value={String(summary.cancelledOrders)} detail={`${formatMoney(summary.cancelledValue, currency)} cancelled value`} tone="danger" />
+      <AnalyticsKpi label="Reorder due" value={String(summary.reorderDue)} detail={`${summary.reorderDueSoon} due within 7 days`} tone="purple" />
+    </section>
+
+    <section className="analytics-grid">
+      <article className="analytics-panel analytics-trend-panel">
+        <PanelHeading eyebrow="Last 8 weeks" title="Lead and delivered-value trend" note="Bars show captured leads; mint shows delivered value." />
+        <div className="trend-chart" role="img" aria-label="Eight-week chart of captured leads and delivered sales value">
+          {analytics.weeklyTrend.map((item) => <div className="trend-week" key={item.label}>
+            <div className="trend-plot">
+              <span className="trend-value" style={{ height: `${Math.max(item.deliveredValue ? 8 : 0, (item.deliveredValue / maxWeeklyValue) * 100)}%` }} title={`${formatMoney(item.deliveredValue, currency)} delivered`} />
+              <span className="trend-leads" style={{ height: `${Math.max(item.leads ? 8 : 0, (item.leads / maxWeeklyLeads) * 100)}%` }} title={`${item.leads} leads`} />
+            </div>
+            <strong>{item.leads} lead{item.leads === 1 ? "" : "s"}</strong><em>{item.deliveredValue ? formatMoney(item.deliveredValue, currency) : "No delivered value"}</em><small>{item.label}</small>
+          </div>)}
+        </div>
+        <div className="chart-legend"><span><i className="legend-leads" />Captured leads</span><span><i className="legend-value" />Delivered value</span></div>
+      </article>
+
+      <article className="analytics-panel">
+        <PanelHeading eyebrow="Sales funnel" title="From enquiry to delivery" note="Current status view of legitimate leads." />
+        <div className="funnel-chart">
+          {analytics.funnel.map((item, index) => <div className="funnel-row" key={item.label}><span>{item.label}</span><div><i style={{ width: `${(item.value / maxFunnel) * 100}%` }} /></div><strong>{item.value}</strong><small>{index ? percentageOf(item.value, analytics.funnel[0].value) : 100}%</small></div>)}
+        </div>
+      </article>
+
+      <article className="analytics-panel">
+        <PanelHeading eyebrow="Lead quality" title="Hot, warm and cold mix" note="Based on transparent LeadPilot scoring." />
+        <div className="temperature-chart">
+          <div className="temperature-bar">{analytics.temperatures.map((item) => <i className={`temperature-${item.label.toLowerCase()}`} key={item.label} style={{ width: `${(item.value / totalTemperatures) * 100}%` }} />)}</div>
+          {analytics.temperatures.map((item) => <div className="temperature-row" key={item.label}><span><i className={`dot-${item.label.toLowerCase()}`} />{item.label}</span><strong>{item.value}</strong><small>{percentageOf(item.value, totalTemperatures)}%</small></div>)}
+        </div>
+        <div className="revenue-health">
+          <div><span>Active pipeline</span><strong>{formatMoney(summary.pipelineValue, currency)}</strong></div>
+          <div><span>Active orders</span><strong>{formatMoney(summary.activeOrderValue, currency)}</strong></div>
+          <div><span>Return rate</span><strong>{summary.returnRate.toFixed(1)}%</strong></div>
+        </div>
+      </article>
+
+      <article className="analytics-panel analytics-insights">
+        <PanelHeading eyebrow="Automatic insights" title="What needs attention" note="Deterministic findings from the latest records." />
+        <ol>{analytics.insights.map((insight, index) => <li key={insight}><span>{String(index + 1).padStart(2, "0")}</span><p>{insight}</p></li>)}</ol>
+      </article>
+    </section>
+
+    <section className="analytics-panel analytics-table-panel">
+      <PanelHeading eyebrow="Channel performance" title="Which source creates retained sales" note="Gross sales minus returned value equals net sales for every source." />
+      <div className="analytics-table-wrap"><table className="analytics-table"><thead><tr><th>Source</th><th>Leads</th><th>Converted</th><th>Kept deliveries</th><th>Returns</th><th>Return rate</th><th>Gross sales</th><th>Returned value</th><th>Net sales</th></tr></thead><tbody>{analytics.sources.map((item) => <tr key={item.source}><td><strong>{item.source}</strong></td><td>{item.leads}</td><td>{item.converted}</td><td>{item.delivered}</td><td>{item.returned}</td><td>{item.returnRate.toFixed(1)}%</td><td>{formatMoney(item.grossSalesValue, currency)}</td><td>{formatMoney(item.returnedValue, currency)}</td><td><strong>{formatMoney(item.netSalesValue, currency)}</strong></td></tr>)}</tbody></table>{analytics.sources.length === 0 ? <div className="analytics-empty">Source performance will appear after leads are captured.</div> : null}</div>
+    </section>
+
+    <section className="analytics-panel analytics-table-panel reorder-panel">
+      <div className="reorder-heading"><PanelHeading eyebrow="Repeat sales" title="Repeat-order schedule" note={`Every delivered customer and the next owner-reviewed contact date using the ${analytics.reorderCycleDays}-day StepFresh cycle.`} /><span className="reorder-count">{summary.reorderDue} due · {summary.reorderDueSoon} soon</span></div>
+      <div className="analytics-table-wrap"><table className="analytics-table"><thead><tr><th>Customer</th><th>Last package</th><th>Last value</th><th>Delivered</th><th>Contact again</th><th>Status</th><th>Action</th></tr></thead><tbody>{analytics.reorderOpportunities.map((item) => <tr key={item.leadId}><td><strong>{item.customerName}</strong><small>{item.contact}</small></td><td>{item.serviceRequested}</td><td><strong>{formatMoney(item.lastOrderValue, currency)}</strong></td><td>{formatShortDate(item.deliveredAt, timezone)}</td><td>{formatShortDate(item.reorderAt, timezone)}</td><td><span className={item.daysUntil > 7 ? "reorder-planned" : item.daysUntil > 0 ? "reorder-soon" : "reorder-overdue"}>{item.daysOverdue ? `${item.daysOverdue}d overdue` : item.daysUntil ? `In ${item.daysUntil}d` : "Due today"}</span></td><td><button className="analytics-open-button" onClick={() => onOpenLead(item.leadId)} type="button">Open lead</button></td></tr>)}</tbody></table>{analytics.reorderOpportunities.length === 0 ? <div className="analytics-empty"><strong>No delivered customer yet.</strong><span>The repeat-order schedule begins automatically after the first delivery.</span></div> : null}</div>
+    </section>
+    <footer className="product-footer"><span>AgentSiraji LeadPilot Analytics</span><span>Captured · Converted · Delivered · Reordered</span></footer>
+  </>;
+}
+
+function AnalyticsKpi({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: string }) {
+  return <article className={`analytics-kpi analytics-kpi-${tone}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;
+}
+
+function PanelHeading({ eyebrow, title, note }: { eyebrow: string; title: string; note: string }) {
+  return <header className="panel-heading"><div><p>{eyebrow}</p><h2>{title}</h2></div><small>{note}</small></header>;
 }
 
 function ScorePart({ label, value, max }: { label: string; value: number; max: number }) {
@@ -421,12 +606,33 @@ function makePreviewLeads(now: number): PreviewLead[] {
 }
 
 function makePreview(id: string, customerName: string, email: string, originalMessage: string, serviceRequested: string, source: string, leadScore: number, temperature: LeadTemperature, pipelineStatus: LeadStatus, attentionState: string, expectedValue: number, minutesAgo: number, now: number): PreviewLead {
-  return { id, customerName, email, phone: null, originalMessage, serviceRequested, location: null, preferredDate: null, source, leadScore, temperature, pipelineStatus, attentionState, expectedValue, doNotContact: false, possibleSpam: false, createdAt: new Date(now - minutesAgo * 60_000).toISOString() };
+  const createdAt = new Date(now - minutesAgo * 60_000).toISOString();
+  return { id, customerName, email, phone: null, originalMessage, serviceRequested, location: null, preferredDate: null, source, leadScore, temperature, pipelineStatus, attentionState, expectedValue, doNotContact: false, possibleSpam: false, createdAt, updatedAt: createdAt, lastCustomerActivityAt: createdAt };
 }
 
 function initials(name: string) { return name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase(); }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "LeadPilot could not complete that request."; }
 function parseJson<T>(value: string | undefined, fallback: T): T { try { return value ? JSON.parse(value) as T : fallback; } catch { return fallback; } }
+function latestCustomerReplyFromEvents(events: EventRow[] | undefined) {
+  const event = events?.find((item) => item.eventType === "customer_reply_recorded");
+  return event ? customerReplyFromEvent(event) : null;
+}
+function customerReplyFromEvent(event: EventRow) {
+  if (event.eventType !== "customer_reply_recorded") return null;
+  const data = parseJson<{ message?: unknown; receivedAt?: unknown }>(event.eventDataJson, {});
+  if (typeof data.message !== "string" || !data.message.trim()) return null;
+  return {
+    message: data.message.trim(),
+    receivedAt: typeof data.receivedAt === "string" ? data.receivedAt : event.createdAt,
+    createdBy: event.createdBy,
+    automatic: ["Facebook Messenger", "WhatsApp"].includes(event.createdBy),
+    channel: ["Facebook Messenger", "WhatsApp"].includes(event.createdBy)
+      ? event.createdBy
+      : `Manual · ${event.createdBy}`,
+  };
+}
 function relativeTime(value: string, now: number) { const minutes = Math.max(0, Math.round((now - new Date(value).getTime()) / 60_000)); return minutes < 60 ? `${minutes} min ago` : minutes < 1_440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1_440)}d ago`; }
-function formatDateTime(value: string) { return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(value)); }
+function formatDateTime(value: string, timezone = "UTC") { return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: timezone }).format(new Date(value)); }
+function formatShortDate(value: string, timezone = "UTC") { return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: timezone }).format(new Date(value)); }
 function formatMoney(value: number, currency: string) { try { return new Intl.NumberFormat("en-GB", { style: "currency", currency, maximumFractionDigits: 0 }).format(value); } catch { return `${currency} ${Math.round(value)}`; } }
+function percentageOf(value: number, total: number) { return total ? Math.round((value / total) * 100) : 0; }

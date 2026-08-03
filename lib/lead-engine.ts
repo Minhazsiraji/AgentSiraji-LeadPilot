@@ -9,6 +9,9 @@ export function normalizeEmail(value?: string | null) {
 }
 
 export function normalizePhone(value?: string | null) {
+  const digits = value?.replace(/\D/g, "") || "";
+  if (/^01[3-9]\d{8}$/.test(digits)) return `+880${digits.slice(1)}`;
+  if (/^8801[3-9]\d{8}$/.test(digits)) return `+${digits}`;
   const normalized = value?.replace(/[^\d+]/g, "") || "";
   return normalized || null;
 }
@@ -26,7 +29,8 @@ export function analyzeLead(input: LeadInput, business: BusinessProfile): LeadAn
   const serviceRequested = configuredOrder?.serviceRequested ?? findService(lower, business.services);
   const explicitlyExcluded = findService(lower, business.excludedServices);
   const hasUnrelatedRepair = /\b(repair|fix)\b.*\b(washing machine|appliance|boiler|car|phone)\b/i.test(message);
-  const location = findLocation(message, business.serviceAreas);
+  const deliveryLocation = extractDeliveryLocation(message);
+  const location = deliveryLocation ?? findLocation(message, business.serviceAreas);
   const hasLocationClue = Boolean(location || /\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/i.test(message));
   const budget = findBudget(message, business.currency);
   const preferredDate = findPreferredDate(message, input.submittedAt);
@@ -39,16 +43,23 @@ export function analyzeLead(input: LeadInput, business: BusinessProfile): LeadAn
 
   const missingInformation: string[] = [];
   if (!serviceRequested) missingInformation.push("service requested");
-  if (!location) missingInformation.push("service location");
-  if (!preferredDate) missingInformation.push("preferred date");
-  if (!budget.amount && scopeDetails.length === 0) missingInformation.push("budget or scope");
-  if (!input.email && !input.phone) missingInformation.push("contact information");
+  if (!location) missingInformation.push(configuredOrder ? "delivery address" : "service location");
+  if (configuredOrder) {
+    if (!input.email && !input.phone) missingInformation.push("contact information");
+    if (!/\b(?:cash on delivery|cod)\b/i.test(message)) missingInformation.push("cash on delivery confirmation");
+  } else {
+    if (!preferredDate) missingInformation.push("preferred date");
+    if (!budget.amount && scopeDetails.length === 0) missingInformation.push("budget or scope");
+    if (!input.email && !input.phone) missingInformation.push("contact information");
+  }
 
   const knownFacts = [
     serviceRequested ? `Service: ${serviceRequested}` : null,
     location ? `Location: ${location}` : null,
     preferredDate ? `Preferred date: ${preferredDate.originalText}` : null,
     budget.amount ? `Budget: ${budget.currency} ${budget.amount}` : null,
+    input.phone ? `Phone: ${input.phone}` : null,
+    deliveryLocation ? `Delivery address: ${deliveryLocation}` : null,
     ...scopeDetails,
   ].filter((value): value is string => Boolean(value));
 
@@ -210,6 +221,71 @@ export function inferConfiguredOrder(message: string, services: string[]) {
   };
 }
 
+export function ensureOrderPackages(services: string[], fallbackPackages: string[]) {
+  const hasConfiguredPackage = services.some((service) =>
+    /\b(?:\d+|one|two)\s*(?:bottles?|packs?|pieces?|pcs)\b.*?[৳£$€]\s*\d+/i.test(service),
+  );
+  return hasConfiguredPackage
+    ? services
+    : [...fallbackPackages, ...services];
+}
+
+export function extractMessagePhone(message: string) {
+  const labelled = message.match(
+    /\b(?:phone|mobile|contact|whatsapp)(?:\s+(?:number|no\.?))?\s*[:=-]?\s*(\+?8801[3-9]\d{8}|01[3-9]\d{8})\b/i,
+  )?.[1];
+  const general = message.match(/(?:^|[^\d])(\+?8801[3-9]\d{8}|01[3-9]\d{8})(?!\d)/)?.[1];
+  return normalizePhone(labelled ?? general ?? null);
+}
+
+export function extractCustomerName(message: string) {
+  return extractLabeledValue(message, ["customer name", "name", "নাম"])
+    ?.slice(0, 120) ?? null;
+}
+
+export function extractDeliveryLocation(message: string) {
+  const address = extractLabeledValue(message, [
+    "delivery address",
+    "delivery location",
+    "full address",
+    "address",
+    "ডেলিভারি ঠিকানা",
+    "ঠিকানা",
+  ]);
+  if (address) return address;
+
+  const thana = extractLabeledValue(message, ["thana/upazila", "thana", "upazila", "থানা/উপজেলা", "থানা", "উপজেলা"]);
+  const district = extractLabeledValue(message, ["district", "জেলা"]);
+  const structuredLocation = [thana, district].filter(Boolean).join(", ");
+  if (structuredLocation) return structuredLocation;
+
+  return extractAddressAfterPhone(message);
+}
+
+function extractAddressAfterPhone(message: string) {
+  const phone = message.match(/(?:^|[^\d])(?:\+?8801[3-9]\d{8}|01[3-9]\d{8})(?!\d)/);
+  if (!phone || phone.index === undefined) return null;
+
+  const afterPhone = message
+    .slice(phone.index + phone[0].length)
+    .split(/[\r\n.!?।]/, 1)[0]
+    ?.replace(/^[\s,;:=-]+/, "")
+    .trim();
+  if (!afterPhone || !afterPhone.includes(",")) return null;
+
+  const candidate = afterPhone
+    .split(/\b(?:payment|pay|cod|cash on delivery|note)\b|(?:পেমেন্ট|ক্যাশ অন ডেলিভারি|নোট)/iu, 1)[0]
+    ?.replace(/[\s,;:=-]+$/, "")
+    .trim();
+  if (!candidate || candidate.length < 3 || candidate.length > 300) return null;
+  if (!/[\p{L}]/u.test(candidate)) return null;
+  if (/\b(?:bottles?|packs?|pieces?|pcs|order|price|parcel|delivery status)\b/iu.test(candidate)) return null;
+
+  const parts = candidate.split(",").map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2 || parts.length > 4 || parts.some((part) => !/[\p{L}]/u.test(part))) return null;
+  return parts.join(", ");
+}
+
 function findService(message: string, services: string[]) {
   const messageQuantity = message.match(/\b(\d+|one|two|three|four|five)\s*(?:bottles?|packs?|pieces?|pcs)\b/i)?.[1];
   const ranked = services.map((service) => {
@@ -268,10 +344,14 @@ function findScopeDetails(message: string) {
   const frequency = message.match(/\b(weekly|fortnightly|monthly|one[- ]off)\b/i);
   const quantity = message.match(/\b(\d+|one|two|three|four|five)\s*(?:bottles?|packs?|pieces?|pcs)\b/i);
   const cod = message.match(/\b(?:cash on delivery|cod)\b/i);
+  const phone = extractMessagePhone(message);
+  const deliveryAddress = extractDeliveryLocation(message);
   if (bedroom) details.push(`Property size: ${bedroom[0]}`);
   if (property) details.push(`Property type: ${property[0]}`);
   if (frequency) details.push(`Frequency: ${frequency[0]}`);
   if (quantity) details.push(`Quantity: ${quantity[0]}`);
+  if (phone) details.push(`Phone: ${phone}`);
+  if (deliveryAddress) details.push(`Delivery address: ${deliveryAddress}`);
   if (cod) details.push("Payment: Cash on delivery");
   return details;
 }
@@ -316,8 +396,53 @@ function buildQuestions(missing: string[]) {
     if (field === "service location") return "What is your delivery or service location?";
     if (field === "preferred date") return "When do you need it?";
     if (field === "budget or scope") return "Could you share the quantity or scope you need?";
+    if (field === "delivery address") return "What is your complete delivery address?";
+    if (field === "cash on delivery confirmation") return "Please confirm that cash on delivery is suitable.";
     return "What is the best way to contact you?";
   });
+}
+
+function extractLabeledValue(message: string, labels: string[]) {
+  const knownLabels = [
+    "name",
+    "customer name",
+    "phone",
+    "mobile",
+    "contact",
+    "whatsapp",
+    "district",
+    "thana/upazila",
+    "thana",
+    "upazila",
+    "delivery address",
+    "delivery location",
+    "full address",
+    "address",
+    "payment",
+    "note",
+    "নাম",
+    "ফোন",
+    "মোবাইল",
+    "জেলা",
+    "থানা/উপজেলা",
+    "থানা",
+    "উপজেলা",
+    "ডেলিভারি ঠিকানা",
+    "ঠিকানা",
+    "পেমেন্ট",
+    "নোট",
+  ].map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = message.match(new RegExp(
+      `(?:^|[\\r\\n]+|[.!?।]\\s+)${escaped}\\s*[:=-]\\s*(.+?)(?=(?:[\\r\\n]+|[.!?।]\\s+)(?:${knownLabels})\\s*[:=-]|$)`,
+      "iu",
+    ));
+    const value = match?.[1]?.trim().replace(/[.!?।]+$/, "").trim();
+    if (value) return value.slice(0, 300);
+  }
+  return null;
 }
 
 function addDays(date: Date, days: number) {

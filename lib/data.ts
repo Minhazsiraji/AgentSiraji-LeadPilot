@@ -1,7 +1,21 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../db";
-import { businesses, followUpTasks, leadAnalyses, leadEvents, leads, ownerNotifications, replyDrafts } from "../db/schema";
-import { analyzeLead, calculateScore, draftFollowUpReply, inferConfiguredOrder, normalizeEmail, normalizeMessage, normalizePhone, temperatureFor } from "./lead-engine";
+import { businesses, facebookContacts, followUpTasks, leadAnalyses, leadEvents, leads, ownerNotifications, replyDrafts, whatsappContacts } from "../db/schema";
+import {
+  analyzeLead,
+  calculateScore,
+  draftFirstReply,
+  draftFollowUpReply,
+  ensureOrderPackages,
+  extractCustomerName,
+  extractDeliveryLocation,
+  extractMessagePhone,
+  inferConfiguredOrder,
+  normalizeEmail,
+  normalizeMessage,
+  normalizePhone,
+  temperatureFor,
+} from "./lead-engine";
 import type { BusinessProfile, LeadAnalysis, LeadInput, PipelineStatus } from "./types";
 import {
   buildCustomerOrderStatusMessage,
@@ -12,6 +26,7 @@ import {
 import { isValidOrderTransition } from "./order-workflow";
 import { getCloudflareEnv } from "./runtime-env";
 import { analyseWithOptionalAI, draftWithOptionalAI } from "./openai";
+import { buildLeadPilotAnalytics } from "./analytics";
 
 export const DEFAULT_BUSINESS_ID = "stepfresh-bd";
 
@@ -105,6 +120,32 @@ async function createSchema() {
       status TEXT NOT NULL DEFAULT 'processing', received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       processed_at TEXT
     )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS facebook_integrations (
+      id TEXT PRIMARY KEY, page_id TEXT NOT NULL, page_name TEXT NOT NULL,
+      app_secret_encrypted TEXT NOT NULL, page_access_token_encrypted TEXT NOT NULL,
+      connected_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS whatsapp_contacts (
+      wa_id TEXT NOT NULL, phone_number_id TEXT NOT NULL, lead_id TEXT NOT NULL,
+      customer_name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (wa_id, phone_number_id)
+    )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS whatsapp_webhook_events (
+      event_id TEXT PRIMARY KEY, wa_id TEXT NOT NULL, phone_number_id TEXT NOT NULL, lead_id TEXT,
+      status TEXT NOT NULL DEFAULT 'processing', received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      processed_at TEXT
+    )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS whatsapp_integrations (
+      id TEXT PRIMARY KEY, waba_id TEXT NOT NULL, phone_number_id TEXT NOT NULL,
+      display_phone_number TEXT NOT NULL, verified_name TEXT NOT NULL,
+      connection_mode TEXT NOT NULL DEFAULT 'coexistence', token_expires_at TEXT,
+      app_secret_encrypted TEXT NOT NULL, access_token_encrypted TEXT NOT NULL,
+      verify_token_encrypted TEXT,
+      connected_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
     d1.prepare("CREATE INDEX IF NOT EXISTS leads_business_created_idx ON leads (business_id, created_at DESC)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS leads_duplicate_idx ON leads (business_id, normalized_message, email, phone)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS analyses_lead_idx ON lead_analyses (lead_id)"),
@@ -112,7 +153,30 @@ async function createSchema() {
     d1.prepare("CREATE INDEX IF NOT EXISTS followups_due_idx ON follow_up_tasks (status, due_at)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS events_lead_idx ON lead_events (lead_id, created_at DESC)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS notifications_business_idx ON owner_notifications (business_id, read_at, created_at DESC)"),
+    d1.prepare("CREATE INDEX IF NOT EXISTS whatsapp_contacts_lead_idx ON whatsapp_contacts (lead_id)"),
+    d1.prepare("CREATE INDEX IF NOT EXISTS whatsapp_events_lead_idx ON whatsapp_webhook_events (lead_id)"),
   ]);
+  await addMissingWhatsAppIntegrationColumns(d1);
+}
+
+async function addMissingWhatsAppIntegrationColumns(d1: D1Database) {
+  const result = await d1.prepare("PRAGMA table_info(whatsapp_integrations)").all<{
+    name: string;
+  }>();
+  const columns = new Set(result.results.map((column) => column.name));
+  const additions = [
+    ["connection_mode", "ALTER TABLE whatsapp_integrations ADD COLUMN connection_mode TEXT NOT NULL DEFAULT 'coexistence'"],
+    ["token_expires_at", "ALTER TABLE whatsapp_integrations ADD COLUMN token_expires_at TEXT"],
+    ["verify_token_encrypted", "ALTER TABLE whatsapp_integrations ADD COLUMN verify_token_encrypted TEXT"],
+  ] as const;
+  for (const [column, statement] of additions) {
+    if (columns.has(column)) continue;
+    try {
+      await d1.prepare(statement).run();
+    } catch (error) {
+      if (!String(error).toLowerCase().includes("duplicate column")) throw error;
+    }
+  }
 }
 
 export async function ensureBusiness() {
@@ -206,6 +270,8 @@ export async function createLead(
     submittedAt?: string;
     expectedValue?: number;
     skipContactlessDuplicate?: boolean;
+    allowRepeatCustomerOrder?: boolean;
+    skipDuplicateCheck?: boolean;
   },
   createdBy: string,
 ) {
@@ -215,34 +281,89 @@ export async function createLead(
   const cleanInput: LeadInput = {
     customerName: input.customerName.trim(),
     email: normalizeEmail(input.email),
-    phone: normalizePhone(input.phone),
+    phone: normalizePhone(input.phone) ?? extractMessagePhone(input.message),
     message: input.message.trim(),
     source: input.source.trim() || "Manual",
     submittedAt,
   };
   const normalized = normalizeMessage(cleanInput.message);
   const db = getDb();
-  const possibleDuplicates = await db.select().from(leads).where(and(eq(leads.businessId, DEFAULT_BUSINESS_ID), eq(leads.normalizedMessage, normalized))).orderBy(desc(leads.createdAt)).limit(5);
+  const possibleDuplicates = input.skipDuplicateCheck
+    ? []
+    : await db.select().from(leads).where(and(eq(leads.businessId, DEFAULT_BUSINESS_ID), eq(leads.normalizedMessage, normalized))).orderBy(desc(leads.createdAt)).limit(5);
   const duplicate = possibleDuplicates.find((lead) =>
     (cleanInput.email && lead.email === cleanInput.email) ||
     (cleanInput.phone && lead.phone === cleanInput.phone) ||
     (!cleanInput.email && !cleanInput.phone && !input.skipContactlessDuplicate)
   );
-  if (duplicate) return { lead: duplicate, duplicate: true };
+  if (
+    duplicate
+    && !(
+      input.allowRepeatCustomerOrder
+      && ["Delivered", "Cancelled", "Returned", "Lost"].includes(duplicate.pipelineStatus)
+    )
+  ) {
+    return { lead: duplicate, duplicate: true };
+  }
 
-  const fallbackAnalysis = analyzeLead(cleanInput, profile);
-  const configuredOrder = inferConfiguredOrder(cleanInput.message, profile.services);
-  const optionalAnalysis = await analyseWithOptionalAI(cleanInput, profile, fallbackAnalysis);
+  const analysisProfile = withStepFreshOrderPackages(profile);
+  const fallbackAnalysis = analyzeLead(cleanInput, analysisProfile);
+  const configuredOrder = inferConfiguredOrder(cleanInput.message, analysisProfile.services);
+  const optionalAnalysis = await analyseWithOptionalAI(cleanInput, analysisProfile, fallbackAnalysis);
   const modelUsed = optionalAnalysis.modelUsed;
-  const analysis = configuredOrder
-    ? {
-        ...optionalAnalysis.analysis,
-        serviceRequested: configuredOrder.serviceRequested,
-        serviceFit: "supported" as const,
-        missingInformation: optionalAnalysis.analysis.missingInformation.filter((field) => field !== "service requested"),
-      }
-    : optionalAnalysis.analysis;
-  const draft = await draftWithOptionalAI(cleanInput, analysis, profile);
+  const deterministicLocation = fallbackAnalysis.location;
+  const serviceRequested = configuredOrder?.serviceRequested ?? optionalAnalysis.analysis.serviceRequested;
+  const location = optionalAnalysis.analysis.location ?? deterministicLocation;
+  const missingInformation = (configuredOrder
+    ? fallbackAnalysis.missingInformation
+    : optionalAnalysis.analysis.missingInformation
+  ).filter((field) => {
+    if (field === "service requested" && serviceRequested) return false;
+    if (["service location", "delivery address"].includes(field) && location) return false;
+    if (field === "contact information" && (cleanInput.email || cleanInput.phone)) return false;
+    return true;
+  });
+  const score = calculateScore({
+    serviceFit: serviceRequested ? "supported" : optionalAnalysis.analysis.serviceFit,
+    purchaseIntent: { level: optionalAnalysis.analysis.purchaseIntent },
+    urgency: { level: optionalAnalysis.analysis.urgency },
+    knownQualificationCount: [
+      serviceRequested,
+      location,
+      optionalAnalysis.analysis.preferredDate,
+      optionalAnalysis.analysis.budgetAmount || optionalAnalysis.analysis.scopeDetails.length,
+      cleanInput.email || cleanInput.phone,
+    ].filter(Boolean).length,
+    hasClearAction: true,
+  });
+  const analysis: LeadAnalysis = {
+    ...optionalAnalysis.analysis,
+    serviceRequested,
+    location,
+    serviceFit: serviceRequested ? "supported" : optionalAnalysis.analysis.serviceFit,
+    scopeDetails: Array.from(new Set([
+      ...optionalAnalysis.analysis.scopeDetails,
+      ...fallbackAnalysis.scopeDetails,
+    ])).slice(0, 20),
+    knownFacts: Array.from(new Set([
+      ...optionalAnalysis.analysis.knownFacts,
+      ...fallbackAnalysis.knownFacts,
+    ])).slice(0, 20),
+    missingInformation,
+    suggestedQuestions: configuredOrder
+      ? fallbackAnalysis.suggestedQuestions
+      : optionalAnalysis.analysis.suggestedQuestions,
+    recommendedNextAction: optionalAnalysis.analysis.doNotContact
+      || optionalAnalysis.analysis.possibleSpam
+      || optionalAnalysis.analysis.serviceFit === "unsupported"
+      ? optionalAnalysis.analysis.recommendedNextAction
+      : missingInformation.length
+        ? `Ask for ${missingInformation.slice(0, 2).join(" and ")}.`
+        : "Review and approve the prepared response.",
+    score,
+    temperature: temperatureFor(score.total),
+  };
+  const draft = await draftWithOptionalAI(cleanInput, analysis, analysisProfile);
   const leadId = crypto.randomUUID();
   const attentionState = analysis.doNotContact ? "Do Not Contact" : analysis.possibleSpam ? "Spam" : analysis.requiresHumanReview ? "Needs Review" : "Reply Approval";
   const [lead] = await db.insert(leads).values({
@@ -317,6 +438,16 @@ export async function createLead(
       message: `${analysis.serviceRequested ?? "Product or quantity pending"} · ${analysis.location ?? "Location pending"} · Reply approval required`,
       createdAt: submittedAt,
     });
+  } else if (cleanInput.source === "WhatsApp") {
+    await db.insert(ownerNotifications).values({
+      id: crypto.randomUUID(),
+      businessId: DEFAULT_BUSINESS_ID,
+      leadId,
+      type: "new_whatsapp_enquiry",
+      title: `New WhatsApp enquiry from ${cleanInput.customerName}`,
+      message: `${analysis.serviceRequested ?? "Product or quantity pending"} · ${analysis.location ?? "Location pending"} · Reply approval required`,
+      createdAt: submittedAt,
+    });
   }
   return { lead, duplicate: false };
 }
@@ -325,18 +456,25 @@ export async function getWorkspacePayload() {
   const business = await ensureBusiness();
   const db = getDb();
   const profile = businessRowToProfile(business);
-  await repairLegacyOrderPricing(profile);
+  await repairLegacyLeadFacts(profile);
   await repairMissingOrderMessages(profile);
-  const [leadRows, analysisRows, draftRows, followupRows, eventRows, notificationRows] = await Promise.all([
+  const [leadRows, analysisRows, draftRows, followupRows, eventRows, notificationRows, facebookContactRows, whatsappContactRows] = await Promise.all([
     db.select().from(leads).where(eq(leads.businessId, DEFAULT_BUSINESS_ID)).orderBy(desc(leads.createdAt)).limit(250),
     db.select().from(leadAnalyses).orderBy(desc(leadAnalyses.createdAt)),
     db.select().from(replyDrafts).orderBy(desc(replyDrafts.createdAt)),
     db.select().from(followUpTasks).orderBy(asc(followUpTasks.dueAt)),
     db.select().from(leadEvents).orderBy(desc(leadEvents.createdAt)).limit(1000),
     db.select().from(ownerNotifications).where(eq(ownerNotifications.businessId, DEFAULT_BUSINESS_ID)).orderBy(desc(ownerNotifications.createdAt)).limit(50),
+    db.select({ leadId: facebookContacts.leadId }).from(facebookContacts),
+    db.select({ leadId: whatsappContacts.leadId }).from(whatsappContacts),
   ]);
   const items = leadRows.map((lead) => ({
     ...lead,
+    replyChannel: whatsappContactRows.some((contact) => contact.leadId === lead.id)
+      ? "whatsapp"
+      : facebookContactRows.some((contact) => contact.leadId === lead.id)
+        ? "facebook"
+        : null,
     analysis: analysisRows.find((row) => row.leadId === lead.id) ?? null,
     draft: draftRows.find((row) => row.leadId === lead.id) ?? null,
     followUps: followupRows.filter((row) => row.leadId === lead.id),
@@ -355,6 +493,7 @@ export async function getWorkspacePayload() {
     business: { ...business, profile },
     leads: items,
     notifications: notificationRows,
+    analytics: buildLeadPilotAnalytics(leadRows, eventRows, now),
     metrics: {
       newLeads: leadRows.filter((lead) => lead.pipelineStatus === "New").length,
       hotLeads: leadRows.filter((lead) => lead.temperature === "Hot" && !["Delivered", "Cancelled", "Returned", "Lost", "Won"].includes(lead.pipelineStatus)).length,
@@ -379,26 +518,106 @@ export async function markOwnerNotificationsRead(notificationId?: string) {
   return { ok: true, readAt };
 }
 
-async function repairLegacyOrderPricing(profile: BusinessProfile) {
+async function repairLegacyLeadFacts(profile: BusinessProfile) {
   const db = getDb();
-  const legacyOrders = await db
+  const analysisProfile = withStepFreshOrderPackages(profile);
+  const legacyLeads = await db
     .select()
     .from(leads)
-    .where(and(eq(leads.businessId, DEFAULT_BUSINESS_ID), eq(leads.expectedValue, 0)))
+    .where(eq(leads.businessId, DEFAULT_BUSINESS_ID))
     .limit(250);
 
-  for (const lead of legacyOrders) {
-    const configuredOrder = inferConfiguredOrder(lead.originalMessage, profile.services);
-    if (!configuredOrder) continue;
-    await db
-      .update(leads)
-      .set({
-        serviceRequested: configuredOrder.serviceRequested,
-        serviceFit: "supported",
-        expectedValue: configuredOrder.expectedValue,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(leads.id, lead.id));
+  for (const lead of legacyLeads) {
+    const configuredOrder = inferConfiguredOrder(lead.originalMessage, analysisProfile.services);
+    const phone = lead.phone ?? extractMessagePhone(lead.originalMessage);
+    const location = lead.location ?? extractDeliveryLocation(lead.originalMessage);
+    const shouldRepair = Boolean(
+      (configuredOrder && (!lead.serviceRequested || lead.expectedValue === 0))
+      || (!lead.phone && phone)
+      || (!lead.location && location),
+    );
+    if (!shouldRepair) continue;
+
+    const input: LeadInput = {
+      customerName: lead.customerName,
+      email: lead.email,
+      phone,
+      message: lead.originalMessage,
+      source: lead.source,
+      submittedAt: lead.createdAt,
+    };
+    const analysis = analyzeLead(input, analysisProfile);
+    const serviceRequested = configuredOrder?.serviceRequested ?? lead.serviceRequested ?? analysis.serviceRequested;
+    const expectedValue = configuredOrder?.expectedValue ?? lead.expectedValue;
+    const knownCount = [serviceRequested, location, lead.preferredDate, lead.budgetAmount, lead.email || phone].filter(Boolean).length;
+    const score = calculateScore({
+      serviceFit: serviceRequested ? "supported" : analysis.serviceFit,
+      purchaseIntent: { level: analysis.purchaseIntent },
+      urgency: { level: analysis.urgency },
+      knownQualificationCount: knownCount,
+      hasClearAction: true,
+    });
+    const missingInformation = analysis.missingInformation.filter((field) => {
+      if (field === "service requested" && serviceRequested) return false;
+      if (["service location", "delivery address"].includes(field) && location) return false;
+      if (field === "contact information" && (lead.email || phone)) return false;
+      return true;
+    });
+    const repairedAnalysis = {
+      ...analysis,
+      serviceRequested,
+      serviceFit: serviceRequested ? "supported" as const : analysis.serviceFit,
+      location: location ?? analysis.location,
+      missingInformation,
+      score,
+      temperature: temperatureFor(score.total),
+    };
+    const now = new Date().toISOString();
+    await db.update(leads).set({
+      phone,
+      serviceRequested,
+      location: location ?? analysis.location,
+      serviceFit: repairedAnalysis.serviceFit,
+      expectedValue,
+      leadScore: score.total,
+      temperature: repairedAnalysis.temperature,
+      updatedAt: now,
+    }).where(eq(leads.id, lead.id));
+
+    const [analysisRow] = await db
+      .select()
+      .from(leadAnalyses)
+      .where(eq(leadAnalyses.leadId, lead.id))
+      .orderBy(desc(leadAnalyses.createdAt))
+      .limit(1);
+    if (analysisRow) {
+      await db.update(leadAnalyses).set({
+        extractedInformationJson: JSON.stringify(repairedAnalysis),
+        missingInformationJson: JSON.stringify(missingInformation),
+        recommendedNextAction: repairedAnalysis.recommendedNextAction,
+        confidence: repairedAnalysis.confidence,
+        scoreBreakdownJson: JSON.stringify(score),
+      }).where(eq(leadAnalyses.id, analysisRow.id));
+    }
+
+    const [pendingDraft] = await db
+      .select()
+      .from(replyDrafts)
+      .where(and(
+        eq(replyDrafts.leadId, lead.id),
+        eq(replyDrafts.draftType, "first_response"),
+        eq(replyDrafts.approvalStatus, "pending"),
+      ))
+      .orderBy(desc(replyDrafts.createdAt))
+      .limit(1);
+    const refreshedDraft = draftFirstReply(input, repairedAnalysis, analysisProfile);
+    if (pendingDraft && refreshedDraft) {
+      await db.update(replyDrafts).set({
+        subject: refreshedDraft.subject,
+        message: refreshedDraft.message,
+        updatedAt: now,
+      }).where(eq(replyDrafts.id, pendingDraft.id));
+    }
   }
 }
 
@@ -546,10 +765,9 @@ export async function updateLead(leadId: string, patch: Record<string, unknown>,
 export async function approveDraft(leadId: string, message: string, actor: string) {
   await ensureSchema();
   const db = getDb();
-  const lead = await db.select().from(leads).where(and(eq(leads.id, leadId), eq(leads.businessId, DEFAULT_BUSINESS_ID))).limit(1);
-  if (!lead[0] || lead[0].doNotContact || lead[0].possibleSpam) return null;
-  const draft = await db.select().from(replyDrafts).where(eq(replyDrafts.leadId, leadId)).orderBy(desc(replyDrafts.createdAt)).limit(1);
-  if (!draft[0]) return null;
+  const approvable = await getApprovableDraft(leadId);
+  if (!approvable) return null;
+  const { lead, draft } = approvable;
   const customerOrderMessage = isCustomerOrderDraft(draft[0].draftType);
   if (!customerOrderMessage && ["Delivered", "Cancelled", "Returned", "Lost"].includes(lead[0].pipelineStatus)) return null;
   const now = new Date().toISOString();
@@ -589,6 +807,25 @@ export async function approveDraft(leadId: string, message: string, actor: strin
   return true;
 }
 
+export async function getApprovableDraft(leadId: string) {
+  await ensureSchema();
+  const db = getDb();
+  const lead = await db
+    .select()
+    .from(leads)
+    .where(and(eq(leads.id, leadId), eq(leads.businessId, DEFAULT_BUSINESS_ID)))
+    .limit(1);
+  if (!lead[0] || lead[0].doNotContact || lead[0].possibleSpam) return null;
+  const draft = await db
+    .select()
+    .from(replyDrafts)
+    .where(and(eq(replyDrafts.leadId, leadId), eq(replyDrafts.approvalStatus, "pending")))
+    .orderBy(desc(replyDrafts.createdAt))
+    .limit(1);
+  if (!draft[0]) return null;
+  return { lead, draft };
+}
+
 export async function prepareFollowUpDraft(taskId: string, actor: string) {
   await ensureSchema();
   const db = getDb();
@@ -618,21 +855,139 @@ export async function prepareFollowUpDraft(taskId: string, actor: string) {
   return true;
 }
 
-export async function recordCustomerReply(leadId: string, message: string, actor: string) {
+export async function recordCustomerReply(
+  leadId: string,
+  message: string,
+  actor: string,
+  receivedAt?: string,
+  orderRevision?: {
+    customerName?: string | null;
+    phone?: string | null;
+  },
+) {
   await ensureSchema();
   const db = getDb();
   const lead = await db.select().from(leads).where(and(eq(leads.id, leadId), eq(leads.businessId, DEFAULT_BUSINESS_ID))).limit(1);
   if (!lead[0] || !message.trim()) return null;
   const now = new Date().toISOString();
+  const receivedDate = receivedAt ? new Date(receivedAt) : new Date(now);
+  const customerActivityAt = Number.isNaN(receivedDate.getTime())
+    ? now
+    : receivedDate.toISOString();
+  const latestCustomerActivityAt = lead[0].lastCustomerActivityAt
+    && lead[0].lastCustomerActivityAt > customerActivityAt
+    ? lead[0].lastCustomerActivityAt
+    : customerActivityAt;
   const doNotContact = /\b(stop (?:contacting|messaging|emailing) me|do not contact|don't contact|unsubscribe)\b/i.test(message);
+  const business = await ensureBusiness();
+  const profile = withStepFreshOrderPackages(businessRowToProfile(business));
+  const combinedMessage = `${lead[0].originalMessage}\n${message.trim()}`;
+  const revisedCustomerName = orderRevision
+    ? extractCustomerName(message) ?? orderRevision.customerName?.trim() ?? null
+    : null;
+  const phone = extractMessagePhone(message)
+    ?? (orderRevision ? normalizePhone(orderRevision.phone) : null)
+    ?? lead[0].phone;
+  const location = extractDeliveryLocation(message) ?? lead[0].location;
+  const configuredOrder = inferConfiguredOrder(
+    orderRevision ? message : combinedMessage,
+    profile.services,
+  );
+  const input: LeadInput = {
+    customerName: revisedCustomerName ?? lead[0].customerName,
+    email: lead[0].email,
+    phone,
+    message: combinedMessage,
+    source: lead[0].source,
+    submittedAt: lead[0].createdAt,
+  };
+  const analysis = analyzeLead(input, profile);
+  const serviceRequested = configuredOrder?.serviceRequested ?? lead[0].serviceRequested ?? analysis.serviceRequested;
+  const expectedValue = configuredOrder?.expectedValue ?? lead[0].expectedValue;
+  const knownCount = [serviceRequested, location, lead[0].preferredDate, lead[0].budgetAmount, lead[0].email || phone].filter(Boolean).length;
+  const score = calculateScore({
+    serviceFit: serviceRequested ? "supported" : analysis.serviceFit,
+    purchaseIntent: { level: analysis.purchaseIntent },
+    urgency: { level: analysis.urgency },
+    knownQualificationCount: knownCount,
+    hasClearAction: true,
+  });
+  const missingInformation = analysis.missingInformation.filter((field) => {
+    if (field === "service requested" && serviceRequested) return false;
+    if (["service location", "delivery address"].includes(field) && location) return false;
+    if (field === "contact information" && (lead[0].email || phone)) return false;
+    return true;
+  });
+  const mergedAnalysis: LeadAnalysis = {
+    ...analysis,
+    serviceRequested,
+    serviceFit: serviceRequested ? "supported" : analysis.serviceFit,
+    location: location ?? analysis.location,
+    missingInformation,
+    score,
+    temperature: temperatureFor(score.total),
+  };
+  const replyDraft = doNotContact
+    ? null
+    : await draftWithOptionalAI(input, mergedAnalysis, profile);
   await db.update(leads).set({
-    lastCustomerActivityAt: now,
-    attentionState: doNotContact ? "Do Not Contact" : "Needs Reply",
+    customerName: input.customerName,
+    phone,
+    serviceRequested,
+    location: location ?? analysis.location,
+    serviceFit: mergedAnalysis.serviceFit,
+    expectedValue,
+    leadScore: score.total,
+    temperature: mergedAnalysis.temperature,
+    lastCustomerActivityAt: latestCustomerActivityAt,
+    attentionState: doNotContact ? "Do Not Contact" : replyDraft ? "Reply Approval" : "Needs Reply",
     doNotContact: doNotContact || lead[0].doNotContact,
     updatedAt: now,
   }).where(eq(leads.id, leadId));
   await db.update(followUpTasks).set({ status: "cancelled", cancelledReason: doNotContact ? "Customer requested no contact" : "Customer replied" }).where(eq(followUpTasks.leadId, leadId));
-  await recordEvent(leadId, "customer_reply_recorded", { message: message.trim().slice(0, 4000), doNotContact, followUpsCancelled: true }, actor);
+  const [analysisRow] = await db
+    .select()
+    .from(leadAnalyses)
+    .where(eq(leadAnalyses.leadId, leadId))
+    .orderBy(desc(leadAnalyses.createdAt))
+    .limit(1);
+  if (analysisRow) {
+    await db.update(leadAnalyses).set({
+      extractedInformationJson: JSON.stringify(mergedAnalysis),
+      missingInformationJson: JSON.stringify(missingInformation),
+      recommendedNextAction: mergedAnalysis.recommendedNextAction,
+      confidence: mergedAnalysis.confidence,
+      scoreBreakdownJson: JSON.stringify(score),
+    }).where(eq(leadAnalyses.id, analysisRow.id));
+  }
+  if (replyDraft) {
+    await db.insert(replyDrafts).values({
+      id: crypto.randomUUID(),
+      leadId,
+      draftType: "customer_reply",
+      subject: replyDraft.subject,
+      message: replyDraft.message,
+      approvalStatus: "pending",
+      createdAt: customerActivityAt,
+      updatedAt: now,
+    });
+  }
+  await recordEvent(leadId, "customer_reply_recorded", {
+    message: message.trim().slice(0, 4000),
+    receivedAt: customerActivityAt,
+    doNotContact,
+    followUpsCancelled: true,
+  }, actor);
+  if (orderRevision && configuredOrder) {
+    await recordEvent(leadId, "whatsapp_order_revised", {
+      serviceRequested,
+      expectedValue,
+      customerName: input.customerName,
+      phone,
+      location: location ?? analysis.location,
+    }, actor);
+  }
+  if (replyDraft) await recordEvent(leadId, "reply_drafted", { approvalStatus: "pending", reason: "customer_reply" }, "LeadPilot");
   return true;
 }
 
@@ -661,6 +1016,11 @@ export async function deleteLead(leadId: string, actor: string) {
   await recordEvent(leadId, "customer_data_deleted", { customerName: lead[0].customerName }, actor);
   const d1 = getCloudflareEnv().DB;
   await d1.batch([
+    d1.prepare("DELETE FROM facebook_contacts WHERE lead_id = ?").bind(leadId),
+    d1.prepare("DELETE FROM facebook_webhook_events WHERE lead_id = ?").bind(leadId),
+    d1.prepare("DELETE FROM whatsapp_contacts WHERE lead_id = ?").bind(leadId),
+    d1.prepare("DELETE FROM whatsapp_webhook_events WHERE lead_id = ?").bind(leadId),
+    d1.prepare("DELETE FROM owner_notifications WHERE lead_id = ?").bind(leadId),
     d1.prepare("DELETE FROM lead_events WHERE lead_id = ?").bind(leadId),
     d1.prepare("DELETE FROM follow_up_tasks WHERE lead_id = ?").bind(leadId),
     d1.prepare("DELETE FROM reply_drafts WHERE lead_id = ?").bind(leadId),
@@ -732,6 +1092,14 @@ function safeNumberArray(value: string): number[] {
 
 function safeObject<T>(value: string): Partial<T> {
   try { const parsed = JSON.parse(value); return parsed && typeof parsed === "object" ? parsed : {}; } catch { return {}; }
+}
+
+function withStepFreshOrderPackages(profile: BusinessProfile): BusinessProfile {
+  const services = ensureOrderPackages(
+    profile.services,
+    defaultBusinessProfile.services,
+  );
+  return services === profile.services ? profile : { ...profile, services };
 }
 
 function cleanNullable(value: unknown) { return typeof value === "string" && value.trim() ? value.trim() : null; }
